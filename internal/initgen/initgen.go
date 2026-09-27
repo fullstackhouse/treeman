@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 
@@ -129,6 +130,104 @@ func engineEntry(name, engine string, fam enginepkg.Family) *yaml.Node {
 		}
 	}
 	return db
+}
+
+// databaseEntries assembles the databases: block's entries: one per
+// hinted framework (family-deduped), then DATABASE_URL inference for
+// hint-only detections, then the loud last-resort mysql guess.
+func databaseEntries(cwd, name string, detected []framework.Spec) []*yaml.Node {
+	var entries []*yaml.Node
+	seen := map[enginepkg.Family]bool{}
+	for _, spec := range detected {
+		if spec.EngineHint == "" {
+			continue
+		}
+		fam, ok := enginepkg.Canonical(spec.EngineHint)
+		if !ok || seen[fam] {
+			continue
+		}
+		seen[fam] = true
+		entries = append(entries, frameworkDbEntry(name, spec))
+	}
+	if len(entries) == 0 {
+		if eng := inferEngineFromEnv(cwd); eng != "" {
+			fam, _ := enginepkg.Canonical(eng)
+			entry := engineEntry(name, eng, fam)
+			mapKeyNode(entry, "engine").HeadComment = "engine inferred from DATABASE_URL — add a migrations.migrate.run block when the framework's CLI is known"
+			entries = append(entries, entry)
+		}
+	}
+	if len(entries) == 0 {
+		// Last-resort fallback: no hint, no env evidence. Keep the
+		// historical mysql default but say so loudly.
+		entries = append(entries, frameworkDbEntry(name, detected[0]))
+		mapKeyNode(entries[0], "engine").HeadComment = "guessed engine: mysql — no framework hint or DATABASE_URL evidence; change this if your primary DB differs"
+	}
+	return entries
+}
+
+// frameworkDbEntry builds the full framework-driven databases entry:
+// the engine entry plus the framework's migrate command (and rollback
+// / inputs when the preset ships them).
+func frameworkDbEntry(name string, spec framework.Spec) *yaml.Node {
+	db := mapNode(
+		"engine", scalar(spec.EngineHint),
+		"name_template", scalar(name+"_testing_{slug}"),
+		"migrate", migrateBlock(spec),
+	)
+	// Optional rollback block: only for frameworks with a clean
+	// step-based "undo last N migrations" CLI. Lets treeman re-apply
+	// an edited already-applied migration via rollback + re-migrate
+	// instead of a full cold rebuild. See DatabaseConfig.Rollback.
+	if spec.RollbackRun != "" {
+		mapSet(db, "rollback", rollbackBlock(spec))
+	}
+	mapSet(db, "inputs", inputNodes(spec))
+	mapSet(db, "test_clones", mapNode(
+		"clones", scalar("auto"),
+		"name_template", scalar(name+"_testing_{slug}_test_{n}"),
+	))
+	// prewarm only applies to Postgres (the only engine with a
+	// constant-time whole-database rename to claim spares with) —
+	// scaffold it where it's valid so users discover the knob.
+	if fam, ok := enginepkg.Canonical(spec.EngineHint); ok && fam == enginepkg.FamilyPostgres {
+		mapSet(db, "prewarm", scalar("2"))
+		mapKeyNode(db, "prewarm").LineComment = "spare clones pre-restored from the template; cache-hit creates claim one via rename (ms)"
+	}
+	return db
+}
+
+// inferEngineFromEnv picks mysql or postgres from DATABASE_URL — the
+// process env first, then a repo-root .env — so a hintless framework
+// (e.g. rails) on a known engine still scaffolds the right one. ""
+// when neither source yields a usable scheme.
+func inferEngineFromEnv(cwd string) string {
+	lookup := func(key string) string {
+		if v, ok := os.LookupEnv(key); ok {
+			return v
+		}
+		body, err := os.ReadFile(filepath.Join(cwd, ".env"))
+		if err != nil {
+			return ""
+		}
+		for line := range strings.SplitSeq(string(body), "\n") {
+			line = strings.TrimSpace(line)
+			line = strings.TrimPrefix(line, "export ")
+			if k, v, found := strings.Cut(line, "="); found && strings.TrimSpace(k) == key {
+				return strings.Trim(strings.TrimSpace(v), "\"'")
+			}
+		}
+		return ""
+	}
+	scheme, _, _ := strings.Cut(lookup("DATABASE_URL"), "://")
+	switch strings.ToLower(scheme) {
+	case "postgres", "postgresql", "pg":
+		return "postgres"
+	case "mysql", "mariadb":
+		return "mysql"
+	default:
+		return ""
+	}
 }
 
 // mappingValue returns the value node for `key` in a mapping node, or
@@ -248,6 +347,14 @@ func RenderGlobalTemplate() string {
 // comments ride on HeadComment / LineComment fields so the output
 // stays self-documenting without ad-hoc string concatenation.
 func RenderTemplate(cwd string) string {
+	detected := framework.DefaultRegistry().DetectAll(cwd)
+	return renderTemplateDetected(cwd, detected)
+}
+
+// renderTemplateDetected is RenderTemplate's core with detection
+// results injected, so the multi-engine scaffolding can be unit-tested
+// against arbitrary framework sets (#70).
+func renderTemplateDetected(cwd string, detected []framework.Spec) string {
 	name := filepath.Base(cwd)
 	has := func(p string) bool {
 		_, err := os.Stat(filepath.Join(cwd, p))
@@ -264,8 +371,6 @@ func RenderTemplate(cwd string) string {
 			break
 		}
 	}
-
-	detected := framework.DefaultRegistry().DetectAll(cwd)
 
 	root := mapNode()
 	// HeadComment on the root mapping becomes the file's first line —
@@ -307,38 +412,14 @@ func RenderTemplate(cwd string) string {
 		mapSet(root, "patches", seqNode(patch))
 	}
 
-	// databases:
+	// databases: — one entry per detected framework with a non-empty
+	// EngineHint, deduped by engine family (#70: the old code took
+	// detected[0] and guessed mysql, so a Rails+Postgres repo got a
+	// mysql block). With no hinted framework, the engine is inferred
+	// from DATABASE_URL in the process env or a repo-root .env before
+	// falling back to mysql with a loud comment.
 	if len(detected) > 0 {
-		spec := detected[0]
-		engine := spec.EngineHint
-		if engine == "" {
-			engine = "mysql"
-		}
-		db := mapNode(
-			"engine", scalar(engine),
-			"name_template", scalar(name+"_testing_{slug}"),
-			"migrate", migrateBlock(spec),
-		)
-		// Optional rollback block: only for frameworks with a clean
-		// step-based "undo last N migrations" CLI. Lets treeman re-apply
-		// an edited already-applied migration via rollback + re-migrate
-		// instead of a full cold rebuild. See DatabaseConfig.Rollback.
-		if spec.RollbackRun != "" {
-			mapSet(db, "rollback", rollbackBlock(spec))
-		}
-		mapSet(db, "inputs", inputNodes(spec))
-		mapSet(db, "test_clones", mapNode(
-			"clones", scalar("auto"),
-			"name_template", scalar(name+"_testing_{slug}_test_{n}"),
-		))
-		// prewarm only applies to Postgres (the only engine with a
-		// constant-time whole-database rename to claim spares with) —
-		// scaffold it where it's valid so users discover the knob.
-		if fam, ok := enginepkg.Canonical(engine); ok && fam == enginepkg.FamilyPostgres {
-			mapSet(db, "prewarm", scalar("2"))
-			mapKeyNode(db, "prewarm").LineComment = "spare clones pre-restored from the template; cache-hit creates claim one via rename (ms)"
-		}
-		mapSet(root, "databases", seqNode(db))
+		mapSet(root, "databases", seqNode(databaseEntries(cwd, name, detected)...))
 	}
 
 	// hooks: create-before-engines:

@@ -9,6 +9,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/stubbedev/treeman/internal/config"
+	"github.com/stubbedev/treeman/internal/migrations/framework"
 	"github.com/stubbedev/treeman/internal/schema"
 )
 
@@ -334,4 +335,52 @@ func TestAppendEngines(t *testing.T) {
 	if err := AppendEngines(path, []string{"oracle"}); err == nil || !strings.Contains(err.Error(), "oracle") {
 		t.Errorf("unknown engine should be rejected, got %v", err)
 	}
+}
+
+// TestRenderTemplateMultiEngine pins the #70 acceptance criteria: a
+// repo whose DATABASE_URL is postgres scaffolds engine: postgres (not
+// a mysql guess), and a repo with two hint-bearing frameworks yields
+// two databases entries.
+func TestRenderTemplateMultiEngine(t *testing.T) {
+	t.Run("DATABASE_URL drives the hintless fallback", func(t *testing.T) {
+		dir := t.TempDir()
+		// rails' markers without a hint; its EngineHint is "". bin/
+		// and config/ are directories; bin/rails is a file within.
+		if err := os.Mkdir(filepath.Join(dir, "bin"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(filepath.Join(dir, "config"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for _, p := range []string{"bin/rails", "Gemfile", "config/database.yml"} {
+			if err := os.WriteFile(filepath.Join(dir, p), []byte("\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("DATABASE_URL=postgres://localhost/app_dev\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		body := RenderTemplate(dir)
+		if !strings.Contains(body, "engine: postgres") {
+			t.Errorf("DATABASE_URL=postgres should scaffold postgres:\n%s", body)
+		}
+		if strings.Contains(body, "engine: mysql") {
+			t.Errorf("hintless framework + postgres env must not guess mysql:\n%s", body)
+		}
+		if !strings.Contains(body, "DATABASE_URL") {
+			t.Errorf("inferred engine should carry the provenance comment:\n%s", body)
+		}
+	})
+
+	t.Run("two hint-bearing frameworks yield two entries", func(t *testing.T) {
+		dir := t.TempDir()
+		two := []framework.Spec{
+			{Name: "laravel", EngineHint: "mysql", MigrateRun: "php artisan migrate --force"},
+			{Name: "alembic", EngineHint: "postgres", MigrateRun: "alembic upgrade head"},
+		}
+		body := renderTemplateDetected(dir, two)
+		if !strings.Contains(body, "engine: mysql") || !strings.Contains(body, "engine: postgres") {
+			t.Errorf("two hint-bearing frameworks should yield two entries:\n%s", body)
+		}
+	})
 }
