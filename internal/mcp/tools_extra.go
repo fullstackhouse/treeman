@@ -902,21 +902,36 @@ func prepareDryRunTool(
 	_ *mcpsdk.CallToolRequest,
 	in prepareDryRunIn,
 ) (*mcpsdk.CallToolResult, prepareDryRunOut, error) {
-	wt, _, err := resolveWorktree(ctx, in.Worktree)
+	out, err := PrepareDryRunPlan(ctx, in.Worktree, in.Repo)
 	if err != nil {
 		return nil, prepareDryRunOut{}, err
 	}
-	repoRoot, err := resolveRepo(ctx, in.Repo)
+	return nil, out, nil
+}
+
+// PrepareDryRunPlanResult renders the per-database prepare plan for a
+// worktree without executing anything — no engine I/O, just name
+// rendering, file stats, and the SQLite fingerprint inspection. Shared
+// core of the MCP prepare_dry_run tool and the CLI's
+// `prepare --dry-run` (#60).
+type PrepareDryRunPlanResult = prepareDryRunOut
+
+func PrepareDryRunPlan(ctx context.Context, worktree, repoOverride string) (PrepareDryRunPlanResult, error) {
+	wt, _, err := resolveWorktree(ctx, worktree)
 	if err != nil {
-		return nil, prepareDryRunOut{}, err
+		return prepareDryRunOut{}, err
+	}
+	repoRoot, err := resolveRepo(ctx, repoOverride)
+	if err != nil {
+		return prepareDryRunOut{}, err
 	}
 	cfg, err := resolve.LoadResolvedForWorktree(repoRoot, wt)
 	if err != nil {
-		return nil, prepareDryRunOut{}, fmt.Errorf("load resolved config: %w", err)
+		return prepareDryRunOut{}, fmt.Errorf("load resolved config: %w", err)
 	}
 	st, err := openStore(ctx)
 	if err != nil {
-		return nil, prepareDryRunOut{}, err
+		return prepareDryRunOut{}, err
 	}
 	defer func() { _ = st.Close() }()
 	sl := slug.For(wt, "")
@@ -925,7 +940,7 @@ func prepareDryRunTool(
 	for i, d := range cfg.Databases {
 		out.Databases = append(out.Databases, planOneDatabase(ctx, st, d, i, wt, tplCtx))
 	}
-	return nil, out, nil
+	return out, nil
 }
 
 // planOneDatabase renders the dry-run plan for one configured database.

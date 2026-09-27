@@ -20,6 +20,7 @@ import (
 	"github.com/stubbedev/treeman/internal/daemonctl"
 	"github.com/stubbedev/treeman/internal/gitenv"
 	"github.com/stubbedev/treeman/internal/initgen"
+	mcpsrv "github.com/stubbedev/treeman/internal/mcp"
 	"github.com/stubbedev/treeman/internal/migrations/framework"
 	"github.com/stubbedev/treeman/internal/migrations/testfw"
 	"github.com/stubbedev/treeman/internal/prepare"
@@ -49,6 +50,10 @@ func PrepareCmd() *cli.Command {
 				Usage: "run synchronously in this process without connecting to or starting a daemon (for CI)",
 			},
 			&cli.BoolFlag{
+				Name:  "dry-run",
+				Usage: "render the per-database pipeline plan (source dbs, dumps, migrate/seed commands, fanout) without executing anything",
+			},
+			&cli.BoolFlag{
 				Name:    "foreground",
 				Aliases: []string{"wait", "f"},
 				Usage:   "stream the daemon's live progress and block until done (default: dispatch and return)",
@@ -58,6 +63,10 @@ func PrepareCmd() *cli.Command {
 			wtPath, repoRoot, err := resolveWtRepo(c.String("worktree"), c.String("repo"))
 			if err != nil {
 				return err
+			}
+			// --dry-run (#60): the MCP prepare_dry_run core, in-process.
+			if c.Bool("dry-run") {
+				return previewPrepare(ctx, c, wtPath, repoRoot)
 			}
 			task := rpc.Task{
 				Type: rpc.TaskPrepare, RepoPath: repoRoot, WorktreePath: wtPath,
@@ -328,6 +337,40 @@ func resolveWtRepo(worktree, repoOverride string) (wtPath, repoRoot string, err 
 	return wtPath, repoRoot, err
 }
 
+// previewPrepare implements `prepare --dry-run` (#60): the MCP
+// prepare_dry_run core in-process — per-database source dbs, dumps,
+// migrate/seed commands and fanout, nothing executed.
+func previewPrepare(_ context.Context, c *cli.Command, wtPath, repoRoot string) error {
+	plan, err := mcpsrv.PrepareDryRunPlan(context.Background(), wtPath, repoRoot)
+	if err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		return json.NewEncoder(ui.Out).Encode(plan)
+	}
+	PrintInfo("prepare plan for %s (repo %s, slug %s) — nothing was executed:", plan.WorktreePath, plan.Repo, plan.Slug)
+	for _, db := range plan.Databases {
+		detail := db.SourceDB
+		if db.KeyPrefix != "" {
+			detail = db.KeyPrefix
+		}
+		if db.BranchScoped {
+			detail += " (branch_scoped)"
+		}
+		if db.FanoutTarget > 0 {
+			detail = fmt.Sprintf("%s + %d clone(s)", detail, db.FanoutTarget)
+		}
+		PrintInfo("  %s → %s", ui.Bold(db.Engine), detail)
+		if db.Migrate != nil {
+			ui.Hint("migrate: %s", db.Migrate.Run)
+		}
+		if db.Seed != nil {
+			ui.Hint("seed: %s", db.Seed.Run)
+		}
+	}
+	return nil
+}
+
 // DbCmd — `treeman db reset` re-syncs a worktree's branch_scoped
 // databases from the live base branch. Drops the current branch's
 // durable copy + the active namespace, then re-runs prepare so each
@@ -351,6 +394,10 @@ func DbCmd() *cli.Command {
 					},
 					&cli.BoolFlag{Name: "json"},
 					&cli.BoolFlag{
+						Name:  "dry-run",
+						Usage: "list the branch_scoped namespaces that would be dropped + re-seeded; change nothing, connect nowhere",
+					},
+					&cli.BoolFlag{
 						Name:    "foreground",
 						Aliases: []string{"wait", "f"},
 						Usage:   "stream the daemon's live progress and block until done (default: dispatch and return)",
@@ -360,6 +407,12 @@ func DbCmd() *cli.Command {
 					wtPath, repoRoot, err := resolveWtRepo(c.Args().First(), c.String("repo"))
 					if err != nil {
 						return err
+					}
+					// --dry-run (#60): same preview MCP db_reset's
+					// dry_run returns — pure name math, no daemon dispatch,
+					// no engine connections.
+					if c.Bool("dry-run") {
+						return previewBranchReset(ctx, c, repoRoot, wtPath)
 					}
 					task := rpc.Task{
 						Type: rpc.TaskDBReset, RepoPath: repoRoot, WorktreePath: wtPath,

@@ -18,6 +18,7 @@ import (
 
 	"github.com/stubbedev/treeman/internal/gitcmd"
 	"github.com/stubbedev/treeman/internal/gitenv"
+	"github.com/stubbedev/treeman/internal/prepare"
 	"github.com/stubbedev/treeman/internal/resolve"
 	"github.com/stubbedev/treeman/internal/rpc"
 	"github.com/stubbedev/treeman/internal/store"
@@ -443,6 +444,10 @@ Examples:
 			&cli.StringFlag{Name: "repo", Aliases: []string{"r"}},
 			&cli.BoolFlag{Name: "force", Aliases: []string{"f"}},
 			&cli.BoolFlag{Name: "yes", Aliases: []string{"y"}, Usage: "skip the confirmation prompt"},
+			&cli.BoolFlag{
+				Name:  "dry-run",
+				Usage: "resolve the target + print the git state and the per-engine drop plan; change nothing, connect nowhere",
+			},
 			// `--detached` runs the teardown inline in this process
 			// instead of dispatching it to the daemon over the socket.
 			// Kept as a manual escape hatch (debugging / daemon-less
@@ -581,6 +586,13 @@ func deleteWorktreeTarget(ctx context.Context, c *cli.Command, repoRoot, target 
 		wtPath = p
 	}
 
+	// --dry-run (#60): resolve the target, show the git state + the
+	// per-engine drop plan, touch nothing. Main-worktree and cwd
+	// refusals still fire — they're guards, not work.
+	if c.Bool("dry-run") {
+		return previewDelete(ctx, c, repoRoot, target, wtPath)
+	}
+
 	// Refuse to tear down the worktree the shell is standing in —
 	// the daemon would rm -rf it under the user's feet and leave
 	// the shell in a deleted directory. `worktree back --remove`
@@ -635,6 +647,104 @@ func deleteWorktreeTarget(ctx context.Context, c *cli.Command, repoRoot, target 
 		Detached: c.Bool("detached"),
 	}, cliSink{})
 	return err
+}
+
+// previewDelete implements `wt delete --dry-run` (#60): the resolved
+// target + git state + the per-engine drop plan PreviewTeardown
+// renders, with NO engine connections. Refusals that would stop the
+// real delete (main worktree, cwd) still error — a preview that lies
+// about being deletable is worse than none.
+func previewDelete(ctx context.Context, c *cli.Command, repoRoot, _, wtPath string) error {
+	if strings.EqualFold(filepath.Clean(wtPath), filepath.Clean(repoRoot)) {
+		return fmt.Errorf("refusing to delete %q: it is the repo's main worktree (primary checkout), not a linked worktree", wtPath)
+	}
+	if cwd, cwdErr := os.Getwd(); cwdErr == nil {
+		if top, topErr := gitWorktreeRoot(cwd); topErr == nil && top == wtPath {
+			return errors.New("refusing to delete the worktree you're in — use `cd \"$(treeman worktree back --remove)\"`")
+		}
+	}
+	branch := gitenv.DetectBranch(ctx, wtPath)
+	cfg, err := resolve.LoadResolvedForWorktree(repoRoot, wtPath)
+	if err != nil {
+		return err
+	}
+	dbs, err := prepare.PreviewTeardown(&cfg, repoRoot, wtPath, registrySlug(ctx, repoRoot, wtPath), branch)
+	if err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		return json.NewEncoder(ui.Out).Encode(map[string]any{
+			"dry_run": true, "wt_path": wtPath, "branch": branch, "databases": dbs,
+		})
+	}
+	PrintInfo("dry run for %s (branch %s) — nothing was removed:", wtPath, branch)
+	printPlanEntries(dbs)
+	return nil
+}
+
+// printPlanEntries renders PreviewTeardown output as one line per
+// database: engine, kind, then the namespace list (clones inlined).
+func printPlanEntries(dbs []prepare.PlanEntry) {
+	for _, d := range dbs {
+		PrintInfo("  %s %s: %s", ui.Bold(d.Engine), ui.Dim(d.Kind), strings.Join(d.Names, ", "))
+	}
+}
+
+// registrySlug resolves the worktree's registered slug from the store
+// — templates render {slug} from the row, not from a path re-hash —
+// falling back to "" (PreviewTeardown derives from the path) when the
+// row is missing or the store is unreadable.
+func registrySlug(ctx context.Context, repoRoot, wtPath string) string {
+	dbPath, err := store.DefaultDBPath()
+	if err != nil {
+		return ""
+	}
+	st, err := store.OpenShared(ctx, dbPath)
+	if err != nil {
+		return ""
+	}
+	var sl string
+	_ = st.DB.QueryRowContext(ctx, `
+		SELECT COALESCE(w.slug,'') FROM worktrees w JOIN repos r ON r.id = w.repo_id
+		WHERE r.path = ? COLLATE NOCASE AND w.path = ? COLLATE NOCASE AND w.deleted_at IS NULL`,
+		repoRoot, wtPath).Scan(&sl)
+	return sl
+}
+
+// previewBranchReset implements `db reset --dry-run` (#60): the
+// branch_scoped namespaces that would be dropped + re-seeded, pure
+// name math — no daemon dispatch, no engine connections.
+func previewBranchReset(ctx context.Context, c *cli.Command, repoRoot, wtPath string) error {
+	branch := gitenv.DetectBranch(ctx, wtPath)
+	cfg, err := resolve.LoadResolvedForWorktree(repoRoot, wtPath)
+	if err != nil {
+		return err
+	}
+	dbs, err := prepare.PreviewBranchReset(&cfg, repoRoot, wtPath, registrySlug(ctx, repoRoot, wtPath), branch)
+	if err != nil {
+		return err
+	}
+	if c.String("engine") != "" {
+		filtered := dbs[:0]
+		for _, d := range dbs {
+			if strings.EqualFold(d.Engine, c.String("engine")) {
+				filtered = append(filtered, d)
+			}
+		}
+		dbs = filtered
+	}
+	if c.Bool("json") {
+		return json.NewEncoder(ui.Out).Encode(map[string]any{
+			"dry_run": true, "wt_path": wtPath, "branch": branch, "would_drop": dbs,
+		})
+	}
+	PrintInfo("dry run for %s (branch %s) — nothing was reset:", wtPath, branch)
+	if len(dbs) == 0 {
+		ui.Hint("no branch_scoped databases configured — a reset would be a no-op")
+		return nil
+	}
+	printPlanEntries(dbs)
+	return nil
 }
 
 func wtRegister() *cli.Command {

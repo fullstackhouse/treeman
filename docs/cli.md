@@ -65,6 +65,7 @@ Examples:
 | `-r`, `--repo` |  |
 | `-f`, `--force` |  |
 | `-y`, `--yes` | skip the confirmation prompt |
+| `--dry-run` | resolve the target + print the git state and the per-engine drop plan; change nothing, connect nowhere |
 | `--detached` |  |
 
 ### `treeman worktree register`
@@ -491,6 +492,7 @@ ensure → dump → migrate → snapshot → replicate
 | `-r`, `--repo` |  |
 | `--json` |  |
 | `--no-daemon` | run synchronously in this process without connecting to or starting a daemon (for CI) |
+| `--dry-run` | render the per-database pipeline plan (source dbs, dumps, migrate/seed commands, fanout) without executing anything |
 | `-f`, `--wait`, `--foreground` | stream the daemon's live progress and block until done (default: dispatch and return) |
 
 ### `treeman db`
@@ -506,6 +508,7 @@ re-sync branch_scoped databases from the live base branch (defaults to the cwd's
 | `-r`, `--repo` |  |
 | `--engine` | restrict the reset to one engine family (mysql, postgres, mongodb, redis, elasticsearch; aliases like mariadb/postgresql/valkey/dragonfly accepted) |
 | `--json` |  |
+| `--dry-run` | list the branch_scoped namespaces that would be dropped + re-seeded; change nothing, connect nowhere |
 | `-f`, `--wait`, `--foreground` | stream the daemon's live progress and block until done (default: dispatch and return) |
 
 ### `treeman db save`
