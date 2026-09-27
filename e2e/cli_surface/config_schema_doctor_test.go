@@ -560,3 +560,44 @@ func keys(m map[string]any) []string {
 	}
 	return out
 }
+
+// TestDoctorFixScaffoldsConfig pins the #80 config fix: `doctor --fix`
+// in a repo without a .treeman.yaml scaffolds one (with --yes, since
+// the e2e runs non-interactively) and the re-run config check lands ok.
+// Without --yes, the confirm refuses on non-TTY stdin and the file is
+// NOT written.
+func TestDoctorFixScaffoldsConfig(t *testing.T) {
+	t.Run("--yes scaffolds and re-checks ok", func(t *testing.T) {
+		repo := newGitRepo(t)
+		e := newEnv(t)
+		res := e.run(t, repo, "doctor", "--fix", "--yes", "--json")
+		if res.err != nil {
+			t.Fatalf("doctor --fix --yes: %v\nstdout:\n%s\nstderr:\n%s", res.err, res.stdout, res.stderr)
+		}
+		if !strings.Contains(res.stdout, `"name":"config","status":"ok"`) {
+			t.Errorf("config check should be ok after the scaffold fix:\n%s", res.stdout)
+		}
+		body, err := os.ReadFile(filepath.Join(repo, ".treeman.yaml"))
+		if err != nil {
+			t.Fatalf("scaffold missing: %v", err)
+		}
+		if !strings.Contains(string(body), "worktrees:") {
+			t.Errorf("scaffold looks wrong:\n%s", head(string(body), 400))
+		}
+	})
+
+	t.Run("non-TTY without --yes declines and writes nothing", func(t *testing.T) {
+		repo := newGitRepo(t)
+		e := newEnv(t)
+		res := e.run(t, repo, "doctor", "--fix", "--json")
+		if res.err != nil {
+			t.Fatalf("doctor --fix: %v", res.err)
+		}
+		if _, err := os.Stat(filepath.Join(repo, ".treeman.yaml")); err == nil {
+			t.Errorf("confirm refused on non-TTY stdin; no scaffold should be written")
+		}
+		if !strings.Contains(res.stdout, `"name":"config","status":"warn"`) {
+			t.Errorf("config check should still warn when the fix was declined:\n%s", res.stdout)
+		}
+	})
+}

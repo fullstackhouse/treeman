@@ -10,6 +10,7 @@ import (
 
 	"github.com/urfave/cli/v3"
 
+	"github.com/stubbedev/treeman/internal/initgen"
 	"github.com/stubbedev/treeman/internal/migrations/framework"
 	"github.com/stubbedev/treeman/internal/resolve"
 	"github.com/stubbedev/treeman/internal/rpc"
@@ -17,6 +18,7 @@ import (
 	"github.com/stubbedev/treeman/internal/snapshot"
 	"github.com/stubbedev/treeman/internal/store"
 	"github.com/stubbedev/treeman/internal/ui"
+	wt2 "github.com/stubbedev/treeman/internal/wt"
 	"github.com/stubbedev/treeman/internal/wtreg"
 )
 
@@ -41,14 +43,15 @@ func DoctorCmd() *cli.Command {
 			&cli.BoolFlag{Name: "json", Usage: "emit one JSON line per check"},
 			&cli.BoolFlag{
 				Name:  "fix",
-				Usage: "auto-apply remediations for `schema` (install) and `registry` (repair) checks; re-runs the probe so the printed result reflects the post-fix state",
+				Usage: "auto-apply remediations: `daemon` (start via daemonctl), `config` (scaffold after confirm), `schema` (install), `registry` (repair), `snapshots` (drop orphans); re-runs the probe so the printed result reflects the post-fix state",
 			},
+			&cli.BoolFlag{Name: "yes", Usage: "with --fix: answer yes to fix-time confirms (e.g. the config scaffold)"},
 		},
 		Action: func(ctx context.Context, c *cli.Command) error {
 			results := RunDoctorChecks(ctx)
 
 			if c.Bool("fix") {
-				results = applyDoctorFixes(ctx, results)
+				results = applyDoctorFixes(ctx, results, c.Bool("yes"))
 			}
 
 			if c.Bool("json") {
@@ -111,7 +114,7 @@ func DoctorCmd() *cli.Command {
 // applyDoctorFixes so the TLDR doesn't over-promise.
 func isFixable(name string) bool {
 	switch name {
-	case "schema", "registry", "snapshots":
+	case "schema", "registry", "snapshots", "daemon", "config":
 		return true
 	}
 	return false
@@ -120,68 +123,109 @@ func isFixable(name string) bool {
 // applyDoctorFixes walks the results and runs the auto-fix path for
 // each warn/fail check that has one wired up. After fixing, the
 // affected check is re-run so the printed result reflects the new
-// state. Fixes that aren't auto-applicable (e.g. `config` warn
-// requires `treeman init` against a non-empty cwd) are left as-is.
-func applyDoctorFixes(ctx context.Context, results []DoctorResult) []DoctorResult {
+// state. Fixes needing consent (`config` scaffolds a file) ask via
+// ui.Confirm unless `assumeYes` (#80).
+func applyDoctorFixes(ctx context.Context, results []doctorResult, assumeYes bool) []doctorResult {
 	repoRoot, _ := resolveRepo("")
 	for i, r := range results {
 		if r.Status == "ok" || r.Status == "skip" {
 			continue
 		}
 		switch r.Name {
+		case "daemon":
+			results[i] = fixDaemon(ctx, r)
+		case "config":
+			results[i] = fixConfig(ctx, repoRoot, r, assumeYes)
 		case "schema":
-			if repoRoot == "" {
-				continue
-			}
-			if _, _, err := schema.Install(repoRoot, schema.TargetRepo); err != nil {
-				results[i].Hint = fmt.Sprintf("fix failed: %v", err)
-				continue
-			}
-			results[i] = checkSchema(repoRoot)
+			results[i] = fixSchema(ctx, repoRoot, r)
 		case "registry":
-			if repoRoot == "" {
-				continue
-			}
-			st, err := openDefaultStore(ctx)
-			if err != nil {
-				results[i].Hint = fmt.Sprintf("fix failed: %v", err)
-				continue
-			}
-			if _, err := wtreg.Repair(ctx, st, repoRoot, detectBranchOfWorktree); err != nil {
-				_ = st.Close()
-				results[i].Hint = fmt.Sprintf("fix failed: %v", err)
-				continue
-			}
-			_ = st.Close()
-			results[i] = checkRegistry(ctx, repoRoot)
+			results[i] = fixRegistry(ctx, repoRoot, r)
 		case "snapshots":
-			if repoRoot == "" {
-				continue
-			}
-			cfg, err := resolve.LoadResolved(repoRoot)
-			if err != nil {
-				results[i].Hint = fmt.Sprintf("fix failed: %v", err)
-				continue
-			}
-			st, err := openDefaultStore(ctx)
-			if err != nil {
-				results[i].Hint = fmt.Sprintf("fix failed: %v", err)
-				continue
-			}
-			orphans, ferr := snapshot.FindOrphans(ctx, &cfg, st)
-			_ = st.Close()
-			if ferr != nil {
-				results[i].Hint = fmt.Sprintf("fix failed: %v", ferr)
-				continue
-			}
-			if _, errs := snapshot.DropOrphans(ctx, &cfg, orphans); len(errs) > 0 {
-				results[i].Hint = fmt.Sprintf("fix failed: %v", errors.Join(errs...))
-				continue
-			}
-			results[i] = checkSnapshots(ctx, repoRoot)
+			results[i] = fixSnapshots(ctx, repoRoot, r)
 		}
 	}
 	return results
+}
+
+// fixFailed stamps a check with the reason its remediation didn't land.
+func fixFailed(r doctorResult, format string, args ...any) doctorResult {
+	r.Hint = "fix failed: " + fmt.Sprintf(format, args...)
+	return r
+}
+
+// fixDaemon auto-starts the daemon via EnsureDaemon (daemonctl's
+// systemd/launchd preference respected) and re-probes. A protocol
+// mismatch is deliberately NOT auto-fixed: starting another daemon
+// can't heal a version skew — only a restart can.
+func fixDaemon(ctx context.Context, r doctorResult) doctorResult {
+	if err := wt2.EnsureDaemon(ctx); err != nil {
+		return fixFailed(r, "%v (restart with: treeman daemon restart)", err)
+	}
+	return checkDaemon(ctx)
+}
+
+// fixConfig scaffolds the missing repo config after consent, then
+// re-probes.
+func fixConfig(_ context.Context, repoRoot string, r doctorResult, assumeYes bool) doctorResult {
+	if repoRoot == "" {
+		return r
+	}
+	if !assumeYes && !ui.Confirm("scaffold "+filepath.Join(repoRoot, ".treeman.yaml")+"?") {
+		return r
+	}
+	if _, _, _, err := initgen.WriteYAML(repoRoot, false); err != nil {
+		return fixFailed(r, "%v", err)
+	}
+	return checkConfig(repoRoot)
+}
+
+func fixSchema(_ context.Context, repoRoot string, r doctorResult) doctorResult {
+	if repoRoot == "" {
+		return r
+	}
+	if _, _, err := schema.Install(repoRoot, schema.TargetRepo); err != nil {
+		return fixFailed(r, "%v", err)
+	}
+	return checkSchema(repoRoot)
+}
+
+func fixRegistry(ctx context.Context, repoRoot string, r doctorResult) doctorResult {
+	if repoRoot == "" {
+		return r
+	}
+	st, err := openDefaultStore(ctx)
+	if err != nil {
+		return fixFailed(r, "%v", err)
+	}
+	if _, err := wtreg.Repair(ctx, st, repoRoot, detectBranchOfWorktree); err != nil {
+		_ = st.Close()
+		return fixFailed(r, "%v", err)
+	}
+	_ = st.Close()
+	return checkRegistry(ctx, repoRoot)
+}
+
+func fixSnapshots(ctx context.Context, repoRoot string, r doctorResult) doctorResult {
+	if repoRoot == "" {
+		return r
+	}
+	cfg, err := resolve.LoadResolved(repoRoot)
+	if err != nil {
+		return fixFailed(r, "%v", err)
+	}
+	st, err := openDefaultStore(ctx)
+	if err != nil {
+		return fixFailed(r, "%v", err)
+	}
+	orphans, ferr := snapshot.FindOrphans(ctx, &cfg, st)
+	_ = st.Close()
+	if ferr != nil {
+		return fixFailed(r, "%v", ferr)
+	}
+	if _, errs := snapshot.DropOrphans(ctx, &cfg, orphans); len(errs) > 0 {
+		return fixFailed(r, "%v", errors.Join(errs...))
+	}
+	return checkSnapshots(ctx, repoRoot)
 }
 
 // doctorResult is the shape both the human renderer and the JSON
@@ -298,7 +342,7 @@ func checkDaemon(ctx context.Context) doctorResult {
 		return doctorResult{
 			Name:   "daemon",
 			Status: "warn",
-			Detail: "not reachable",
+			Detail: daemonUnreachableDetail(),
 			Hint:   "start it with: treeman daemon start (or `treeman daemon install` to auto-launch)",
 		}
 	}
@@ -314,6 +358,27 @@ func checkDaemon(ctx context.Context) doctorResult {
 		Status: "ok",
 		Detail: fmt.Sprintf("treemand %s pid=%d watchers=%d", resp.DaemonVersion, resp.Pid, resp.WatcherCount),
 	}
+}
+
+// daemonUnreachableDetail explains WHERE the daemon was expected: the
+// resolved socket path, whether it exists on disk, and whether the
+// TREEMAN_SOCKET override is what picked it (#80) — "not reachable"
+// alone left stale-socket and mis-set-override undiagnosable.
+func daemonUnreachableDetail() string {
+	sock, serr := rpc.SocketPath()
+	if serr != nil {
+		return "not reachable (socket path unresolved: " + serr.Error() + ")"
+	}
+	detail := "not reachable: socket " + sock
+	if _, statErr := os.Stat(sock); statErr != nil {
+		detail += " not found"
+	} else {
+		detail += " exists but no daemon answers"
+	}
+	if override := os.Getenv("TREEMAN_SOCKET"); override != "" {
+		detail += " (TREEMAN_SOCKET=" + override + ")"
+	}
+	return detail
 }
 
 func checkConfig(repoRoot string) doctorResult {

@@ -150,3 +150,63 @@ func TestDaemonStartStatusReloadStop(t *testing.T) {
 		t.Errorf("daemon still reported running after stop")
 	}
 }
+
+// TestDoctorFixStartsDaemon pins the #80 acceptance criterion: with a
+// stopped daemon, `doctor --fix` brings it up via EnsureDaemon and the
+// re-run daemon check reports ok. The socket-detail criterion (a
+// TREEMAN_SOCKET override is named in the unreachable detail) is
+// asserted against the same isolated env before the fix runs.
+func TestDoctorFixStartsDaemon(t *testing.T) {
+	binDir := sharedDaemonBinDir(t)
+	e := newEnv(t)
+
+	sockDir, err := os.MkdirTemp("", "tmd-rt-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(sockDir) })
+	sock := filepath.Join(sockDir, "treeman.sock")
+
+	run := func(args ...string) cliResult {
+		cmd := exec.Command(sharedBin(t), args...)
+		cmd.Env = append(os.Environ(), e.block()...)
+		cmd.Env = append(cmd.Env,
+			"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+			"TREEMAN_SOCKET="+sock,
+		)
+		var sout, serr strings.Builder
+		cmd.Stdout = &sout
+		cmd.Stderr = &serr
+		err := cmd.Run()
+		return cliResult{stdout: sout.String(), stderr: serr.String(), err: err}
+	}
+
+	// Before the fix: the daemon check must name the socket path AND
+	// the override in its detail.
+	before := run("doctor", "--json")
+	if before.err != nil {
+		t.Fatalf("doctor (down daemon): %v", before.err)
+	}
+	if !strings.Contains(before.stdout, sock) || !strings.Contains(before.stdout, "TREEMAN_SOCKET="+sock) {
+		t.Errorf("unreachable detail must name the socket path + override:\n%s", before.stdout)
+	}
+
+	// Fix: should start the daemon and re-report the check as ok. Run
+	// with --json so the ok status is greppable.
+	fixRes := run("doctor", "--fix", "--json")
+	if fixRes.err != nil {
+		t.Fatalf("doctor --fix failed: %v\nstdout:%s\nstderr:%s", fixRes.err, fixRes.stdout, fixRes.stderr)
+	}
+	// daemon start may print a pid line; reap the process if we can.
+	if m := pidRe.FindStringSubmatch(fixRes.stdout); m != nil {
+		if pid, perr := strconv.Atoi(m[1]); perr == nil {
+			t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+		}
+	}
+	if !strings.Contains(fixRes.stdout, `"name":"daemon","status":"ok"`) {
+		t.Errorf("doctor --fix should end with the daemon check ok:\n%s", fixRes.stdout)
+	}
+
+	// Best-effort shutdown so the spawned daemon doesn't outlive the test.
+	_ = run("daemon", "stop")
+}
