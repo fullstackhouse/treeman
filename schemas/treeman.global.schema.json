@@ -193,7 +193,7 @@
             "opensearch",
             "s3"
           ],
-          "description": "Engine discriminator. Gates which connection block is dialed\nand which sub-fields (dump, migrations, namespaces) are valid.\n`postgresql` is an alias for `postgres`; `opensearch` is an\nalias for `elasticsearch`; `valkey` and `dragonfly` are aliases\nfor `redis` (same wire protocol, same key-prefix scoping)."
+          "description": "Engine discriminator. Gates which connection block is dialed\nand which sub-fields (dump, migrations, namespaces) are valid.\n`postgresql` is an alias for `postgres`; `opensearch` is an\nalias for `elasticsearch`; `valkey` and `dragonfly` are aliases\nfor `redis` (same wire protocol, same key-prefix scoping).\nThe rendered schema's enum is injected from engine.Known by\nschema.Reflect, so the alias list lives in exactly one place."
         },
         "name_template": {
           "type": "string",

@@ -4,8 +4,11 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/stubbedev/treeman/internal/engine"
 )
 
 func TestRenderProducesObjectSchema(t *testing.T) {
@@ -19,6 +22,70 @@ func TestRenderProducesObjectSchema(t *testing.T) {
 	}
 	if s["$schema"] == nil {
 		t.Errorf("missing $schema declaration")
+	}
+}
+
+// renderedEngineEnum digs `properties.databases → $defs.DatabaseConfig
+// → properties.engine → enum` out of the rendered schema.
+func renderedEngineEnum(t *testing.T) []string {
+	t.Helper()
+	b, err := Render()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var s struct {
+		Defs struct {
+			DatabaseConfig struct {
+				Properties struct {
+					Engine struct {
+						Enum []string `json:"enum"`
+					} `json:"engine"`
+				} `json:"properties"`
+			} `json:"DatabaseConfig"`
+		} `json:"$defs"`
+	}
+	if err := json.Unmarshal(b, &s); err != nil {
+		t.Fatalf("rendered schema is not valid JSON: %v", err)
+	}
+	return s.Defs.DatabaseConfig.Properties.Engine.Enum
+}
+
+// TestEngineEnumTracksEngineKnown pins the schema's engine enum to
+// engine.Known so the two can't drift — a new alias added to Known
+// lands in schemas/treeman.schema.json on the next sync-schema with no
+// hand edit, and a config-side hand edit can't desync from validation.
+func TestEngineEnumTracksEngineKnown(t *testing.T) {
+	got := renderedEngineEnum(t)
+	if !reflect.DeepEqual(got, engine.Known) {
+		t.Errorf("schema engine enum diverges from engine.Known:\nschema: %v\nKnown:  %v", got, engine.Known)
+	}
+}
+
+// TestEngineEnumOverwritesReflectedValue proves the enum is injected
+// (not appended to a stale literal): whatever the reflector starts
+// from ends up exactly engine.Known.
+func TestEngineEnumOverwritesReflectedValue(t *testing.T) {
+	s := Reflect()
+	dbDef, ok := s.Definitions["DatabaseConfig"]
+	if !ok {
+		t.Fatal("no DatabaseConfig definition in reflected schema")
+	}
+	engineProp, ok := dbDef.Properties.Get("engine")
+	if !ok {
+		t.Fatal("no engine property on DatabaseConfig")
+	}
+	engineProp.Enum = []any{"stale-alias", engine.Known[0]}
+	injectEngineEnum(s)
+	got := make([]string, 0, len(engine.Known))
+	for _, v := range engineProp.Enum {
+		s, ok := v.(string)
+		if !ok {
+			t.Fatalf("enum entry is %T, want string", v)
+		}
+		got = append(got, s)
+	}
+	if !reflect.DeepEqual(got, engine.Known) {
+		t.Errorf("injected enum diverges from engine.Known: %v", got)
 	}
 }
 

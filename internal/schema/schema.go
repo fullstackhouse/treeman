@@ -23,6 +23,7 @@ import (
 	"github.com/invopop/jsonschema"
 
 	"github.com/stubbedev/treeman/internal/config"
+	"github.com/stubbedev/treeman/internal/engine"
 )
 
 // URL is the canonical upstream URL for the REPO-scoped schema that
@@ -49,7 +50,35 @@ func Reflect() *jsonschema.Schema {
 		FieldNameTag:   "yaml",
 		CommentMap:     config.CommentMap(),
 	}
-	return r.Reflect(&config.Config{})
+	s := r.Reflect(&config.Config{})
+	injectEngineEnum(s)
+	return s
+}
+
+// injectEngineEnum overwrites `databases[].engine`'s enum with the
+// live engine.Known list, so the accepted aliases in editor hinting
+// are derived from the same source of truth as validation. Runs after
+// reflection (the struct tag carries no enum any more) — the
+// DatabaseConfig definition is where Anonymous reflection parks the
+// struct; the guard set keeps a rename from silently dropping the
+// enum (the schema test pins the outcome either way).
+func injectEngineEnum(s *jsonschema.Schema) {
+	if s.Definitions == nil {
+		return
+	}
+	dbDef, ok := s.Definitions["DatabaseConfig"]
+	if !ok || dbDef.Properties == nil {
+		return
+	}
+	engineProp, ok := dbDef.Properties.Get("engine")
+	if !ok {
+		return
+	}
+	enum := make([]any, len(engine.Known))
+	for i, k := range engine.Known {
+		enum[i] = k
+	}
+	engineProp.Enum = enum
 }
 
 // Render returns the JSON Schema for config.Config as pretty-printed

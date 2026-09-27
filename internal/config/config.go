@@ -1320,7 +1320,9 @@ type DatabaseConfig struct {
 	// `postgresql` is an alias for `postgres`; `opensearch` is an
 	// alias for `elasticsearch`; `valkey` and `dragonfly` are aliases
 	// for `redis` (same wire protocol, same key-prefix scoping).
-	Engine string `yaml:"engine" jsonschema:"enum=mysql,enum=mariadb,enum=tidb,enum=postgres,enum=postgresql,enum=mongodb,enum=redis,enum=valkey,enum=dragonfly,enum=elasticsearch,enum=opensearch,enum=s3"`
+	// The rendered schema's enum is injected from engine.Known by
+	// schema.Reflect, so the alias list lives in exactly one place.
+	Engine string `yaml:"engine"`
 
 	// Template for the per-worktree database/index name. Supports
 	// `{slug}`, `{slug_dash}`, `{slug_redis_queue}`, `{slug_redis_cache}`

@@ -594,6 +594,8 @@ and which sub-fields (dump, migrations, namespaces) are valid.
 `postgresql` is an alias for `postgres`; `opensearch` is an
 alias for `elasticsearch`; `valkey` and `dragonfly` are aliases
 for `redis` (same wire protocol, same key-prefix scoping).
+The rendered schema's enum is injected from engine.Known by
+schema.Reflect, so the alias list lives in exactly one place.
 
 _Allowed: `mysql`, `mariadb`, `tidb`, `postgres`, `postgresql`, `mongodb`, `redis`, `valkey`, `dragonfly`, `elasticsearch`, `opensearch`, `s3`_
 
