@@ -2,6 +2,33 @@
 
 [← back to README](../README.md)
 
+## Scope and non-goals
+
+These boundaries are deliberate design decisions, not gaps. Each is
+enforced in code at the named place:
+
+1. **Git-worktree-only VCS.** Every git subprocess is funneled through
+   `internal/gitcmd` (which explains why no Go git library is used),
+   parsing helpers live in `internal/gitx`, and worktree creation goes
+   through `wt.CreateInStore` → `git worktree add`. Treeman requires
+   git to be installed anyway (it manages git worktrees), so Jujutsu,
+   Mercurial, and Sapling are non-goals. Multi-VCS support would mean
+   abstracting `gitcmd` + `gitx` + `wt/create` behind a VCS interface
+   and is deliberately out of scope.
+2. **Single-user daemon.** One human per host: the socket checks the
+   peer's uid (SO_PEERCRED on Linux, owner stat elsewhere) and the
+   SQLite store assumes one writer identity.
+3. **One host.** The daemon, its socket, the registry DB, and the
+   databases it prepares are all local; there is no remote-daemon or
+   fleet coordination layer.
+4. **Unix-like OS.** Unix sockets, `setsid` hook detachment, and
+   systemd-user/launchd units are the process model; Windows lacks
+   all three natively.
+
+If you find an issue thread asking "would treeman work with $OTHER_VCS
+/ multi-user / remote daemons?", link here instead of re-deriving the
+answer.
+
 ## Storage layout
 
 | Path | What |

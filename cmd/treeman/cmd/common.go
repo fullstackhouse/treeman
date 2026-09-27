@@ -23,7 +23,14 @@ func DiscoverRepoRoot(start string) (string, error) {
 	// whole cmd tree, so Background is used here.
 	root, err := gitenv.MainRoot(context.Background(), start)
 	if err != nil {
-		return "", fmt.Errorf("discover repo root from %s: %w", start, err)
+		// The common way to land here is running treeman outside any
+		// git repo — say so plainly instead of a bare git error, and
+		// point at the doc that records the git-only boundary (#106).
+		return "", fmt.Errorf(
+			"discover repo root from %s: %w — treeman only runs inside a git repository (it manages git worktrees; see docs/internals.md, \"Scope and non-goals\")",
+			start,
+			err,
+		)
 	}
 	return root, nil
 }
