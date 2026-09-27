@@ -9,6 +9,8 @@ Run `just sync-docs` after touching any subcommand to refresh.
 
 ### `treeman worktree`
 
+Aliases: `wt`
+
 worktree lifecycle
 
 ### `treeman worktree create`

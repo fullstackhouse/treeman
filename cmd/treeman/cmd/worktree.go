@@ -27,8 +27,9 @@ import (
 // WorktreeCmd — `treeman worktree {create,delete,register,unregister,list,finalize}`.
 func WorktreeCmd() *cli.Command {
 	return &cli.Command{
-		Name:  "worktree",
-		Usage: "worktree lifecycle",
+		Name:    "worktree",
+		Aliases: []string{"wt"},
+		Usage:   "worktree lifecycle",
 		Commands: []*cli.Command{
 			wtCreate(),
 			wtDelete(),

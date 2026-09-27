@@ -351,3 +351,46 @@ func TestWtDeleteDispatch(t *testing.T) {
 			res.stdout, res.stderr)
 	}
 }
+
+// ── treeman wt alias ──────────────────────────────────────
+
+func TestWtAlias(t *testing.T) {
+	t.Run("alias routes identically to the full spelling", func(t *testing.T) {
+		repo := newGitRepo(t)
+		e := newEnv(t)
+		viaAlias := e.run(t, repo, "wt", "list")
+		viaFull := e.run(t, repo, "worktree", "list")
+		if viaAlias.err != nil {
+			t.Fatalf("wt list: %v\nstderr:\n%s", viaAlias.err, viaAlias.stderr)
+		}
+		if viaAlias.stdout != viaFull.stdout {
+			t.Errorf("wt list output diverges from worktree list:\nalias:\n%s\nfull:\n%s",
+				viaAlias.stdout, viaFull.stdout)
+		}
+	})
+
+	t.Run("bare wt shows the worktree help", func(t *testing.T) {
+		e := newEnv(t)
+		res := e.run(t, e.home, "wt")
+		if res.err != nil {
+			t.Fatalf("bare wt: %v\nstderr:\n%s", res.err, res.stderr)
+		}
+		combined := res.stdout + res.stderr
+		for _, want := range []string{"worktree lifecycle", "worktree [command"} {
+			if !strings.Contains(combined, want) {
+				t.Errorf("bare wt help missing %q:\n%s", want, combined)
+			}
+		}
+	})
+
+	t.Run("typo near the alias suggests wt", func(t *testing.T) {
+		e := newEnv(t)
+		res := e.run(t, e.home, "wtt", "list")
+		if res.err == nil {
+			t.Errorf("expected wtt to fail as an unknown command")
+		}
+		if !strings.Contains(res.stdout+res.stderr, "wt") {
+			t.Errorf("wtt should suggest wt:\nstdout:\n%s\nstderr:\n%s", res.stdout, res.stderr)
+		}
+	})
+}
