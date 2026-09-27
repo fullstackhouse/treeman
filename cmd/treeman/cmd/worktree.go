@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/urfave/cli/v3"
@@ -20,6 +21,7 @@ import (
 	"github.com/stubbedev/treeman/internal/resolve"
 	"github.com/stubbedev/treeman/internal/rpc"
 	"github.com/stubbedev/treeman/internal/store"
+	"github.com/stubbedev/treeman/internal/tui"
 	"github.com/stubbedev/treeman/internal/ui"
 	"github.com/stubbedev/treeman/internal/wt"
 )
@@ -30,6 +32,7 @@ func WorktreeCmd() *cli.Command {
 		Name:    "worktree",
 		Aliases: []string{"wt"},
 		Usage:   "worktree lifecycle",
+		Action:  worktreeRootAction,
 		Commands: []*cli.Command{
 			wtCreate(),
 			wtDelete(),
@@ -47,6 +50,132 @@ func WorktreeCmd() *cli.Command {
 			wtPrune(),
 			WtGcCmd(),
 		},
+	}
+}
+
+// worktreeRootAction runs when `treeman worktree` gets no subcommand.
+// On a terminal that's the management picker over the repo's
+// worktrees (Enter = resolve + print path for the cd shim, ctrl+d =
+// delete, ctrl+s = show, ctrl+n = create wizard); without a TTY it
+// degrades to the subcommand help exactly as before.
+func worktreeRootAction(ctx context.Context, c *cli.Command) error {
+	if !tui.Interactive() {
+		return cli.ShowSubcommandHelp(c)
+	}
+	repoRoot, err := resolveRepo(c.String("repo"))
+	if err != nil {
+		// No repo to manage from here — the picker has nothing to list.
+		return cli.ShowSubcommandHelp(c)
+	}
+	return worktreeActionPicker(ctx, c, repoRoot)
+}
+
+// worktreeActionPicker is the bare-`treeman worktree` surface: a
+// filterable single-select over the repo's worktrees whose plain
+// Enter resolves + prints the path (stdout carries only the path —
+// the cd-substitution contract), and whose action keys hand the row
+// to the same flows as the named subcommands.
+func worktreeActionPicker(ctx context.Context, c *cli.Command, repoRoot string) error {
+	occ := occupiedWorktrees(ctx, repoRoot)
+	type row struct{ label, path, branch string }
+	// Markers cost a `git status` per worktree — scan concurrently,
+	// same as buildSwitchMenu.
+	var (
+		mu   sync.Mutex
+		wg   sync.WaitGroup
+		rows []row
+	)
+	for branch, p := range occ {
+		wg.Add(1)
+		go func(branch, p string) {
+			defer wg.Done()
+			r := row{
+				label:  ui.Cyan("[worktree] "+branch+worktreeMarkers(ctx, p)) + "  " + ui.SymArrow + "  " + p,
+				path:   p,
+				branch: branch,
+			}
+			mu.Lock()
+			rows = append(rows, r)
+			mu.Unlock()
+		}(branch, p)
+	}
+	wg.Wait()
+	if len(rows) == 0 {
+		ui.Info("No worktrees yet.")
+		ui.Hint("create one with: treeman worktree create <branch>")
+		return nil
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].branch < rows[j].branch })
+	items := make([]string, len(rows))
+	paths := make([]string, len(rows))
+	for i, r := range rows {
+		items[i] = r.label
+		paths[i] = r.path
+	}
+	res, err := tui.Select(items, tui.Options{
+		Prompt: "manage worktree (enter=open, ctrl+d delete, ctrl+s show, ctrl+n new)",
+		Values: paths,
+		Actions: []tui.Action{
+			{Key: "ctrl+d", Name: "delete", Hint: "delete", NeedsSelection: true},
+			{Key: "ctrl+s", Name: "show", Hint: "show", NeedsSelection: true},
+			{Key: "ctrl+n", Name: "new", Hint: "new worktree"},
+		},
+	})
+	switch {
+	case errors.Is(err, tui.ErrAborted), errors.Is(err, tui.ErrCanceled):
+		return nil
+	case err != nil:
+		return err
+	}
+	var path string
+	if res.Index >= 0 {
+		path = paths[res.Index]
+	}
+	switch res.Action {
+	case "delete":
+		if path == "" {
+			return nil
+		}
+		// Same flow as `wt delete <path>`: the root command carries no
+		// --force/--yes, so the confirmations still apply.
+		return deleteWorktreeTarget(ctx, c, repoRoot, path)
+	case "show":
+		if path == "" {
+			return nil
+		}
+		return showWorktree(ctx, showOpts{events: 10, hooks: 5}, path)
+	case "new":
+		name, base, werr := branchWizard(ctx, repoRoot, res.Query)
+		if werr != nil || name == "" {
+			return werr
+		}
+		task := rpc.Task{
+			Type:         rpc.TaskWorktreeCreate,
+			RepoPath:     repoRoot,
+			Params:       map[string]string{rpc.ParamBranch: name},
+			InheritedEnv: CaptureInheritedEnv(),
+		}
+		if base != "" {
+			task.Params[rpc.ParamFrom] = base
+		}
+		payload, perr := resultPayload(ctx, task)
+		if perr != nil {
+			return perr
+		}
+		var cres wt.CreateResult
+		if jerr := json.Unmarshal(payload, &cres); jerr != nil {
+			return jerr
+		}
+		printCreateResult(cres)
+		return nil
+	default:
+		if path == "" {
+			return nil
+		}
+		// cd-shim contract: stdout carries only the resolved path.
+		touchVisitedByPath(ctx, path)
+		fmt.Println(path)
+		return nil
 	}
 }
 

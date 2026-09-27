@@ -35,76 +35,102 @@ func wtShow() *cli.Command {
 			&cli.BoolFlag{Name: "json"},
 		},
 		Action: func(ctx context.Context, c *cli.Command) error {
-			pager := newPagerIfEligible(c, false, c.Bool("json"))
-			if pager != nil {
-				_ = pager.Start()
-				defer pager.Close()
-			}
-			st, closer, err := openLogStore(ctx)
-			if err != nil {
-				return err
-			}
-			defer closer()
-
-			repoID := resolveShowRepoID(ctx, st, c.String("repo"))
-
-			var wt worktreeRow
-			if c.NArg() >= 1 {
-				wt, err = loadWorktreeRow(ctx, st, repoID, c.Args().First())
-			} else {
-				// No argument — resolve the worktree containing cwd.
-				wt, err = worktreeFromCwd(ctx, st)
-			}
-			if err != nil {
-				return err
-			}
-
-			// Recent events.
-			evs, _ := st.QueryEvents(ctx, store.EventFilter{
-				WorktreeID: wt.ID,
-				Limit:      c.Int("events"),
-				HydrateWT:  false,
-			})
-			reverseEvents(evs)
-
-			if c.Bool("json") {
-				runs, _ := st.QueryHookRuns(ctx, wt.ID, c.Int("hooks"))
-				state, detail := finalizeState(ctx, st, wt.ID)
-				ports, _ := st.LoadWorktreePorts(ctx, wt.ID)
-				branches, _ := st.ListActiveBranches(ctx, wt.ID)
-				return jsonStream(map[string]any{
-					"id":            wt.ID,
-					"slug":          wt.Slug,
-					"branch":        wt.Branch,
-					"path":          wt.Path,
-					"created_at":    wt.CreatedAt,
-					"state":         ui.StripANSI(state),
-					"state_detail":  ui.StripANSI(detail),
-					"ports":         ports,
-					"branch_scoped": branches,
-					"events":        evs,
-					"hook_runs":     runs,
-				})
-			}
-
-			printWtHeader(ctx, st, wt)
-			printWtPrepareSummary(ctx, st, wt.ID)
-			if len(evs) > 0 {
-				_, _ = fmt.Fprintln(ui.Out, ui.Bold("recent events"))
-				for _, e := range evs {
-					printEvent(false, e)
-				}
-				_, _ = fmt.Fprintln(ui.Out)
-			}
-
-			// Recent hook runs.
-			runs, _ := st.QueryHookRuns(ctx, wt.ID, c.Int("hooks"))
-			printWtHookRuns(runs)
-
-			ui.Hint("follow live events: treeman worktree logs %s --follow", wt.Slug)
-			return nil
+			return showWorktree(ctx, showOpts{
+				repo:    c.String("repo"),
+				events:  c.Int("events"),
+				hooks:   c.Int("hooks"),
+				asJSON:  c.Bool("json"),
+				noPager: c.Bool("no-pager"),
+			}, c.Args().First())
 		},
 	}
+}
+
+// showOpts carries the show surface's knobs so the bare-`wt` action
+// picker can reuse it without a parsed subcommand.
+type showOpts struct {
+	repo    string
+	events  int
+	hooks   int
+	asJSON  bool
+	noPager bool
+}
+
+// showWorktree renders the `wt show` surface for target (a name,
+// branch, or path) — or the worktree containing cwd when target is
+// empty.
+func showWorktree(ctx context.Context, opts showOpts, target string) error {
+	pager := newPagerIfEligible(nil, false, opts.asJSON)
+	if opts.noPager {
+		pager = nil
+	}
+	if pager != nil {
+		_ = pager.Start()
+		defer pager.Close()
+	}
+	st, closer, err := openLogStore(ctx)
+	if err != nil {
+		return err
+	}
+	defer closer()
+
+	repoID := resolveShowRepoID(ctx, st, opts.repo)
+
+	var wt worktreeRow
+	if target != "" {
+		wt, err = loadWorktreeRow(ctx, st, repoID, target)
+	} else {
+		// No target — resolve the worktree containing cwd.
+		wt, err = worktreeFromCwd(ctx, st)
+	}
+	if err != nil {
+		return err
+	}
+
+	// Recent events.
+	evs, _ := st.QueryEvents(ctx, store.EventFilter{
+		WorktreeID: wt.ID,
+		Limit:      opts.events,
+		HydrateWT:  false,
+	})
+	reverseEvents(evs)
+
+	if opts.asJSON {
+		runs, _ := st.QueryHookRuns(ctx, wt.ID, opts.hooks)
+		state, detail := finalizeState(ctx, st, wt.ID)
+		ports, _ := st.LoadWorktreePorts(ctx, wt.ID)
+		branches, _ := st.ListActiveBranches(ctx, wt.ID)
+		return jsonStream(map[string]any{
+			"id":            wt.ID,
+			"slug":          wt.Slug,
+			"branch":        wt.Branch,
+			"path":          wt.Path,
+			"created_at":    wt.CreatedAt,
+			"state":         ui.StripANSI(state),
+			"state_detail":  ui.StripANSI(detail),
+			"ports":         ports,
+			"branch_scoped": branches,
+			"events":        evs,
+			"hook_runs":     runs,
+		})
+	}
+
+	printWtHeader(ctx, st, wt)
+	printWtPrepareSummary(ctx, st, wt.ID)
+	if len(evs) > 0 {
+		_, _ = fmt.Fprintln(ui.Out, ui.Bold("recent events"))
+		for _, e := range evs {
+			printEvent(false, e)
+		}
+		_, _ = fmt.Fprintln(ui.Out)
+	}
+
+	// Recent hook runs.
+	runs, _ := st.QueryHookRuns(ctx, wt.ID, opts.hooks)
+	printWtHookRuns(runs)
+
+	ui.Hint("follow live events: treeman worktree logs %s --follow", wt.Slug)
+	return nil
 }
 
 // resolveShowRepoID resolves the repo id to scope `wt show` lookups to:
