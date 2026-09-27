@@ -162,6 +162,7 @@ type model struct {
 	cursor   int           // index into filtered
 	marked   map[int]bool  // keyed by ORIGINAL item index
 	matched  map[int][]int // original index → rune offsets of the matched query runes
+	width    int           // terminal columns for row truncation (tea.WindowSizeMsg updates it)
 	action   string
 	canceled bool // Ctrl+C — cancel this step
 	aborted  bool // Esc — quit the whole command
@@ -177,7 +178,7 @@ func newModel(items []string, opts Options) *model {
 	// View() draws the same static "▌" half-block cursor as the plain
 	// input prompt.
 	ti.Cursor.SetMode(cursor.CursorHide)
-	m := &model{items: items, opts: opts, input: ti, marked: map[int]bool{}}
+	m := &model{items: items, opts: opts, input: ti, marked: map[int]bool{}, width: ui.TermWidth()}
 	m.refilter()
 	return m
 }
@@ -235,6 +236,12 @@ func (m *model) values() []string {
 }
 
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if sz, ok := msg.(tea.WindowSizeMsg); ok {
+		// Re-fit on resize: rows are truncated against this width, so a
+		// shrunk terminal must not keep the stale geometry.
+		m.width = sz.Width
+		return m, nil
+	}
 	key, ok := msg.(tea.KeyMsg)
 	if !ok {
 		return m, nil
@@ -422,6 +429,12 @@ func (m *model) View() string {
 	for _, i := range win {
 		orig := m.filtered[i]
 		cursor := i == m.cursor
+		// Row budget: terminal columns minus the gutter (pointer or
+		// two-space indent, plus the mark column in multi-select).
+		budget := m.width - 2
+		if m.opts.Multi {
+			budget -= 2
+		}
 		if cursor {
 			b.WriteString(ui.Cyan(ui.SymPointer + " "))
 		} else {
@@ -434,7 +447,11 @@ func (m *model) View() string {
 				b.WriteString(ui.Dim(ui.SymMarkOff) + " ")
 			}
 		}
-		line := m.highlightMatch(orig)
+		// Truncate the decorated line so a long path can't wrap: a
+		// wrapped row desyncs bubbletea's line accounting on redraw and
+		// duplicates cursor rows. values() keeps the full raw strings,
+		// so fuzzy matching is unaffected.
+		line := ui.Truncate(m.highlightMatch(orig), max(budget, 10))
 		if cursor {
 			line = ui.Bold(line)
 		}

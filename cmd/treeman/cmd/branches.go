@@ -138,7 +138,7 @@ func renderBranchTable(rows []branchRow) {
 		}
 		tbl.Row(r.Branch, origin, wt)
 	}
-	tbl.Render(nil)
+	tbl.SetWidth(ui.TermWidth()).Render(nil)
 }
 
 // listGitBranches returns local branch names (or origin-remote

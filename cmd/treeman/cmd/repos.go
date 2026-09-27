@@ -143,5 +143,5 @@ func renderRepoTable(all []repoRow) {
 		)
 		tbl.Row(cells...)
 	}
-	tbl.Render(nil)
+	tbl.SetWidth(ui.TermWidth()).Render(nil)
 }

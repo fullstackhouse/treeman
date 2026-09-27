@@ -371,7 +371,7 @@ func renderHookRunsTable(runs []store.HookRun, all bool) {
 			tbl.Row(id, ui.Dim(formatTs(h.StartedAt)), ui.Cyan(h.Phase), ui.Dim(group), exit, dur, cmd)
 		}
 	}
-	tbl.Render(nil)
+	tbl.SetWidth(ui.TermWidth()).Render(nil)
 }
 
 // renderHookLog writes the captured stdout+stderr for a hook_run id
@@ -629,7 +629,16 @@ func printEvent(asJSON bool, e store.Event) {
 	if e.DurationMs.Valid && e.DurationMs.Int64 > 0 {
 		dur = " " + ui.Dim(fmt.Sprintf("(%dms)", e.DurationMs.Int64))
 	}
+	// Fit the message to the terminal: the prefix (ts, level, 24-rune
+	// event-type pad, worktree, phase) and the duration suffix are
+	// reserved first, and an overlong message gets an ellipsis instead
+	// of wrapping the rest of the line. JSON output (handled above)
+	// stays full-length.
 	msg := e.Message
+	if !asJSON {
+		budget := max(ui.TermWidth()-ui.Width(ts)-1-ui.Width(level)-1-24-ui.Width(wt)-ui.Width(phase)-1-ui.Width(dur), 10)
+		msg = ui.Truncate(msg, budget)
+	}
 	_, _ = fmt.Fprintf(ui.Out, "%s %s %s%s%s %s%s\n", ts, padRight(level, 5), padRight(et, 24), wt, phase, msg, dur)
 }
 

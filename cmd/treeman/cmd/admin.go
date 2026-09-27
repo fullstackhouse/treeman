@@ -250,7 +250,7 @@ func SnapshotsCmd() *cli.Command {
 						}
 						t.Row(ui.Cyan(sc.Engine), sc.TemplateName, sc.SourceDB, spareCol, ui.Dim(sc.Fingerprint))
 					}
-					t.Render(nil)
+					t.SetWidth(ui.TermWidth()).Render(nil)
 					return nil
 				},
 			},

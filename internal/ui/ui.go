@@ -10,10 +10,13 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"unicode/utf8"
 
+	"github.com/charmbracelet/x/ansi"
+	ctermsize "github.com/charmbracelet/x/term"
 	"github.com/mattn/go-isatty"
 )
 
@@ -217,6 +220,44 @@ func StripANSI(s string) string {
 // Width returns the visible width of s: ANSI-stripped, counted in
 // runes (not bytes) so multi-byte symbols like ★ or → pad correctly.
 func Width(s string) int { return utf8.RuneCountInString(StripANSI(s)) }
+
+// defaultTermWidth is the fallback when stdout isn't a terminal
+// (pipes, CI, e2e captures): the classic terminal width.
+const defaultTermWidth = 80
+
+// TermWidth returns the terminal width in columns for line-fitting:
+// $COLUMNS wins when set to a sane integer (tests and per-invocation
+// overrides), else the stdout window size, else 80. Callers use it to
+// truncate (Truncate, Table.SetWidth) instead of letting long paths
+// wrap and shred alignment. Deliberately not cached: the ioctl is one
+// syscall per render, and a cached value goes stale under $COLUMNS
+// overrides and test isolation alike.
+func TermWidth() int {
+	if v := os.Getenv("COLUMNS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 20 && n <= 1000 {
+			return n
+		}
+	}
+	if isatty.IsTerminal(os.Stdout.Fd()) || isatty.IsCygwinTerminal(os.Stdout.Fd()) {
+		if w, _, err := ctermsize.GetSize(os.Stdout.Fd()); err == nil && w > 0 {
+			return w
+		}
+	}
+	return defaultTermWidth
+}
+
+// Truncate cuts s to at most w display columns, ending with an
+// ellipsis when anything was cut. ANSI-aware: styled input keeps its
+// escape codes balanced so downstream width math stays correct.
+func Truncate(s string, w int) string {
+	if w <= 0 {
+		return ""
+	}
+	if Width(s) <= w {
+		return s
+	}
+	return ansi.Truncate(s, w, "…")
+}
 
 // Out is where styled output goes. Tests override this; PagerStart
 // also retargets it for the duration of a pager session.

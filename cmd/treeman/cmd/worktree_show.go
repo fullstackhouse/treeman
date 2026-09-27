@@ -282,7 +282,7 @@ func printWtHookRuns(runs []store.HookRun) {
 		}
 		tbl.Row(ui.Dim(formatTs(h.StartedAt)), ui.Cyan(h.Phase), exit, dur)
 	}
-	tbl.Render(nil)
+	tbl.SetWidth(ui.TermWidth()).Render(nil)
 	_, _ = fmt.Fprintln(ui.Out)
 }
 

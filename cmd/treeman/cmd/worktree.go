@@ -913,7 +913,7 @@ func renderWtTable(all []wtRow, anyMain, withStatus, withState, withSize bool) {
 		cells = append(cells, ui.Dim(lastLabel(r.HeadTs, r.VisitedTs)), r.Path)
 		tbl.Row(cells...)
 	}
-	tbl.Render(nil)
+	tbl.SetWidth(ui.TermWidth()).Render(nil)
 	if anyStatusErr {
 		ui.Hint("%s", "STATUS '?' = git status failed; use --json for the per-row error")
 	}
