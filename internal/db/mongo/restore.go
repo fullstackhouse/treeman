@@ -14,6 +14,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/stubbedev/treeman/internal/config"
 	"github.com/stubbedev/treeman/internal/db/containerip"
@@ -354,19 +355,43 @@ func (s *wireStager) stagedWithOptions(db, coll string) bool {
 
 // promote renames every staging collection onto its final name —
 // atomic per collection, replacing the previous contents wholesale.
+// Renames fan out under a bounded errgroup (#83): each is an O(1)
+// catalog operation but a seed-heavy dump stages dozens of them, and
+// serial renames dominated small restores. Per-namespace failures
+// aggregate so cleanup still sees (and reaps) every unpromoted staging
+// collection.
 func (s *wireStager) promote(ctx context.Context) error {
-	for key, p := range s.staged {
-		cmd := bson.D{
-			{Key: "renameCollection", Value: p.db + "." + restoreStagePrefix + p.coll},
-			{Key: "to", Value: key},
-			{Key: "dropTarget", Value: true},
-		}
-		if err := s.client.Database("admin").RunCommand(ctx, cmd).Err(); err != nil {
-			return fmt.Errorf("promote %s: %w", key, err)
-		}
-		delete(s.staged, key)
+	type promoteJob struct {
+		key string
+		p   nsParts
 	}
-	return nil
+	jobs := make([]promoteJob, 0, len(s.staged))
+	for key, p := range s.staged {
+		jobs = append(jobs, promoteJob{key: key, p: p})
+	}
+	errs := make([]error, len(jobs))
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(4)
+	for i, j := range jobs {
+		g.Go(func() error {
+			cmd := bson.D{
+				{Key: "renameCollection", Value: j.p.db + "." + restoreStagePrefix + j.p.coll},
+				{Key: "to", Value: j.key},
+				{Key: "dropTarget", Value: true},
+			}
+			if err := s.client.Database("admin").RunCommand(gctx, cmd).Err(); err != nil {
+				errs[i] = fmt.Errorf("promote %s: %w", j.key, err)
+			}
+			return nil
+		})
+	}
+	_ = g.Wait()
+	for i, j := range jobs {
+		if errs[i] == nil {
+			delete(s.staged, j.key)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // cleanup reaps the surviving staging collections after a failed
@@ -385,8 +410,18 @@ func (s *wireStager) cleanup(ctx context.Context) {
 // stripped (createIndexes rejects it on modern servers). Metadata that
 // fails to parse (mongodump extended-JSON drift) is warned + skipped —
 // the data already restored; a createIndexes refusal is a hard error,
-// matching mongorestore.
+// matching mongorestore. Builds fan out under a bounded errgroup (#83):
+// index builds dominate restore wall-clock on seed-heavy dumps, and
+// one build per collection parallelizes like mongorestore's own
+// --numParallelCollections. Per-collection failures aggregate with
+// their namespace so the restore fails with the offending collection
+// named.
 func replayIndexes(ctx context.Context, client *mongo.Client, metas []collMeta, remap func(string) string) error {
+	type indexJob struct {
+		db, coll string
+		specs    []bson.D
+	}
+	jobs := make([]indexJob, 0, len(metas))
 	for _, m := range metas {
 		if m.skip() {
 			continue
@@ -400,16 +435,25 @@ func replayIndexes(ctx context.Context, client *mongo.Client, metas []collMeta, 
 		if len(specs) == 0 {
 			continue
 		}
-		db := remap(m.DB)
-		cmd := bson.D{
-			{Key: "createIndexes", Value: m.Collection},
-			{Key: "indexes", Value: specs},
-		}
-		if err := client.Database(db).RunCommand(ctx, cmd).Err(); err != nil {
-			return fmt.Errorf("replay %d index(es) on %s.%s: %w", len(specs), db, m.Collection, err)
-		}
+		jobs = append(jobs, indexJob{db: remap(m.DB), coll: m.Collection, specs: specs})
 	}
-	return nil
+	errs := make([]error, len(jobs))
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(4)
+	for i, j := range jobs {
+		g.Go(func() error {
+			cmd := bson.D{
+				{Key: "createIndexes", Value: j.coll},
+				{Key: "indexes", Value: j.specs},
+			}
+			if err := client.Database(j.db).RunCommand(gctx, cmd).Err(); err != nil {
+				errs[i] = fmt.Errorf("replay %d index(es) on %s.%s: %w", len(j.specs), j.db, j.coll, err)
+			}
+			return nil
+		})
+	}
+	_ = g.Wait()
+	return errors.Join(errs...)
 }
 
 // collectCollOptions parses every prelude entry's `options` blob into

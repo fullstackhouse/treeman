@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -110,6 +111,81 @@ func TestWireRestoreFidelityAndAtomicity(t *testing.T) {
 	for _, c := range names {
 		if len(c) >= 8 && c[:8] == "_tmload_" {
 			t.Errorf("staging junk survived failed restore: %s", c)
+		}
+	}
+}
+
+// TestWireRestoreFailingIndexNamespacesCollection pins the #83 error
+// contract for the parallelized index replay: two index specs sharing
+// a name but not a key make the server reject createIndexes, and the
+// restore must fail with the offending collection's namespace in the
+// error message (not a bare driver error), leaving no staging junk.
+func TestWireRestoreFailingIndexNamespacesCollection(t *testing.T) {
+	harness.SkipIfNoDocker(t)
+	composeDir := harness.MustAbs(".")
+	t.Cleanup(harness.ComposeUp(t, composeDir))
+	waitForMongo(t)
+
+	t.Setenv("PATH", t.TempDir())
+	conn := &config.MongoConn{URI: wireURI}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	client, err := mongo.Connect(options.Client().ApplyURI(wireURI))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = client.Disconnect(context.Background()) }()
+	const targetDB = "treeman_wire_badidx"
+	t.Cleanup(func() { _ = client.Database(targetDB).Drop(context.Background()) })
+
+	var buf bytes.Buffer
+	w32 := func(v uint32) {
+		if err := binary.Write(&buf, binary.LittleEndian, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	doc := func(v any) {
+		raw, err := bson.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		buf.Write(raw)
+	}
+	w32(0x8199e26d)
+	doc(bson.M{"concurrent_collections": int32(1), "server_version": "7.0.0"})
+	// Two specs, same name "dup", different keys — createIndexes
+	// refuses the pair outright.
+	doc(bson.M{
+		"db": "srcdb", "collection": "users",
+		"metadata": `{"indexes":[{"v":2,"key":{"_id":1},"name":"_id_"},{"v":2,"key":{"a":1},"name":"dup"},{"v":2,"key":{"b":1},"name":"dup"}],"type":"collection"}`,
+	})
+	w32(0xFFFFFFFF)
+	doc(bson.M{"db": "srcdb", "collection": "users"})
+	doc(bson.M{"_id": int32(1), "a": 1})
+	w32(0xFFFFFFFF)
+	w32(0xFFFFFFFF)
+
+	dump := filepath.Join(t.TempDir(), "badidx.archive")
+	if err := os.WriteFile(dump, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err = dbmongo.Restore(ctx, conn, targetDB, "srcdb", dump)
+	if err == nil {
+		t.Fatal("conflicting index specs: want restore error")
+	}
+	if !strings.Contains(err.Error(), targetDB+".users") {
+		t.Errorf("error must name the offending namespace %s.users, got: %v", targetDB, err)
+	}
+	// The failed index replay must not leak staging copies: cleanup
+	// reaps every remaining staging collection.
+	names, err := client.Database(targetDB).ListCollectionNames(ctx, bson.D{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range names {
+		if len(c) >= 8 && c[:8] == "_tmload_" {
+			t.Errorf("staging junk survived failed index replay: %s", c)
 		}
 	}
 }
