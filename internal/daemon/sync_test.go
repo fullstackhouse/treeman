@@ -10,6 +10,63 @@ import (
 	"github.com/stubbedev/treeman/internal/store"
 )
 
+// TestEmitSkipDedupesUnchangedReason pins the fetch:skip event
+// dedup: two sweeps with the same skip reason append exactly one
+// event, a changed reason appends another, and the in-memory marker
+// (sync_status last_skip_reason) tracks the latest tick throughout —
+// so an ever-stuck worktree no longer grows the events table every
+// sweep.
+func TestEmitSkipDedupesUnchangedReason(t *testing.T) {
+	ctx := context.Background()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "treeman.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	st := NewState(ctx, s)
+	repoID, err := s.EnsureRepo(ctx, "/tmp/repo", "repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	skipEvents := func() int64 {
+		t.Helper()
+		n, err := s.CountEvents(ctx, store.EventFilter{EventTypes: []string{store.EvtFetchSkip}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	emitSkip(ctx, st, repoID, "/tmp/repo/wt", "feature", SyncSkipNoUpstream, "no upstream")
+	emitSkip(ctx, st, repoID, "/tmp/repo/wt", "feature", SyncSkipNoUpstream, "no upstream")
+	if n := skipEvents(); n != 1 {
+		t.Fatalf("two same-reason ticks produced %d events, want 1", n)
+	}
+	if got := st.SyncLastSkip("/tmp/repo/wt"); got != SyncSkipNoUpstream {
+		t.Errorf("marker = %q, want %q", got, SyncSkipNoUpstream)
+	}
+
+	emitSkip(ctx, st, repoID, "/tmp/repo/wt", "feature", SyncSkipDirty, "dirty tree")
+	if n := skipEvents(); n != 2 {
+		t.Fatalf("changed reason produced %d events total, want 2", n)
+	}
+	if got := st.SyncLastSkip("/tmp/repo/wt"); got != SyncSkipDirty {
+		t.Errorf("marker = %q, want %q", got, SyncSkipDirty)
+	}
+
+	// An advance clears the marker; the next skip after it is a new
+	// event again (not swallowed by the pre-advance reason).
+	emitAdvance(ctx, st, repoID, "/tmp/repo/wt", "feature", "ff", "advanced")
+	emitSkip(ctx, st, repoID, "/tmp/repo/wt", "feature", SyncSkipDirty, "dirty tree")
+	if got := st.SyncLastSkip("/tmp/repo/wt"); got != SyncSkipDirty {
+		t.Errorf("marker after advance+skip = %q, want %q", got, SyncSkipDirty)
+	}
+	if n := skipEvents(); n != 3 {
+		t.Fatalf("skip after advance produced %d events total, want 3", n)
+	}
+}
+
 // TestSyncNowAdvancesTargetedRepo verifies that SyncNow with a
 // specific repo path fetches + advances that repo and emits a
 // per-repo status row.

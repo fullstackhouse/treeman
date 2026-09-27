@@ -469,12 +469,20 @@ func advanceRebase(ctx context.Context, st *State, repoID int64, wtPath, branch 
 	return nil
 }
 
-// emitSkip writes an `fetch:skip` event and stamps the
-// worktree's last-skip-reason on State so sync_status can surface it
-// without scanning the event log.
+// emitSkip writes an `fetch:skip` event when the worktree's skip
+// reason CHANGED and stamps the worktree's last-skip-reason on State
+// (every tick) so sync_status can surface it without scanning the
+// event log.
 func emitSkip(ctx context.Context, st *State, repoID int64, wtPath, branch, reason, detail string) {
 	slog.Debug("auto_fetch skip", "wt", wtPath, "branch", branch, "reason", reason)
+	unchanged := st.SyncLastSkip(wtPath) == reason
 	st.RecordSyncSkip(wtPath, reason)
+	if unchanged {
+		// Same reason as the previous tick: the event is already on
+		// record. The marker above still updates so sync_status stays
+		// accurate without appending an identical row every sweep.
+		return
+	}
 	_ = st.Store.WriteEvent(ctx, store.LevelInfo, store.EvtFetchSkip,
 		detail, repoID, lookupWorktreeID(ctx, st, wtPath), "", 0, map[string]string{
 			"wt":     wtPath,
