@@ -2181,8 +2181,8 @@ func LoadLayered(repoRoot string) (Config, error) {
 }
 
 // LoadLayeredForWorktree mirrors LoadLayered but also overlays the
-// worktree's own `.treeman.local.yaml`. Used by the daemon's
-// per-worktree fanout.
+// worktree's own `.treeman.local.yaml` plus any hierarchical
+// fragments. Used by the daemon's per-worktree fanout.
 func LoadLayeredForWorktree(mainRoot, wtRoot string) (Config, error) {
 	cfg, err := LoadGlobal()
 	if err != nil {
@@ -2192,6 +2192,13 @@ func LoadLayeredForWorktree(mainRoot, wtRoot string) (Config, error) {
 		filepath.Join(mainRoot, ".treeman.yaml"),
 		filepath.Join(mainRoot, ".treeman.local.yaml"),
 	}
+	// Hierarchical fragments (#66): a monorepo subdir may carry its
+	// own .treeman.yaml. It applies ONLY to worktrees under that
+	// subdir — the directory location is the scope filter — so the
+	// shipped monorepo-aware detectors (`services/*/migrations`,
+	// `apps/*/drizzle`) have a config layer that can serve them.
+	// Shallow fragments merge first so deeper ones override.
+	repoFiles = append(repoFiles, fragmentPaths(mainRoot, wtRoot)...)
 	if wtRoot != "" && wtRoot != mainRoot {
 		repoFiles = append(repoFiles, filepath.Join(wtRoot, ".treeman.local.yaml"))
 	}
@@ -2208,6 +2215,27 @@ func LoadLayeredForWorktree(mainRoot, wtRoot string) (Config, error) {
 		return cfg, fmt.Errorf("config invalid: %w", err)
 	}
 	return cfg, nil
+}
+
+// fragmentPaths returns a `.treeman.yaml` path for every directory
+// between mainRoot (exclusive) and wtRoot (inclusive), shallow first.
+// Worktrees outside mainRoot (or wtRoot == mainRoot) get none.
+func fragmentPaths(mainRoot, wtRoot string) []string {
+	if mainRoot == "" || wtRoot == "" || wtRoot == mainRoot {
+		return nil
+	}
+	rel, err := filepath.Rel(mainRoot, wtRoot)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return nil
+	}
+	parts := strings.Split(rel, string(filepath.Separator))
+	out := make([]string, 0, len(parts))
+	cur := mainRoot
+	for _, part := range parts {
+		cur = filepath.Join(cur, part)
+		out = append(out, filepath.Join(cur, ".treeman.yaml"))
+	}
+	return out
 }
 
 // normaliseAliases collapses deprecated YAML keys onto their

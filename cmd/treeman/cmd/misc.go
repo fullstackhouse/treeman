@@ -1425,8 +1425,15 @@ func InitCmd() *cli.Command {
 // initRepoAction scaffolds .treeman.yaml for the repo rooted at cwd:
 // detection-driven template, optional --engine/--interactive databases
 // activation, immediate load-validation, and the first-run hints.
+// Inside a monorepo subdir (#66) it scaffolds a hierarchical fragment
+// instead — but only when the root already has a config; a fragment
+// without a root config would be silently inert for repo-wide reads,
+// so init refuses and points at the root.
 func initRepoAction(c *cli.Command) error {
 	cwd, _ := os.Getwd()
+	if err := guardSubdirInit(cwd); err != nil {
+		return err
+	}
 	detected := framework.DefaultRegistry().DetectAll(cwd)
 	engines := enginesForScaffold(c)
 	if c.Bool("interactive") && len(engines) == 0 && !tui.Interactive() {
@@ -1470,9 +1477,16 @@ func initRepoAction(c *cli.Command) error {
 	PrintHint("review the generated databases:/hooks: blocks before first create")
 	// First-run guard (#71): the scaffold must load. A failure
 	// here is a template regression — surface it now instead of
-	// at the user's first `worktree create`.
-	if _, err := resolve.LoadResolved(cwd); err != nil {
-		return fmt.Errorf("the scaffolded config does not load (report this): %w", err)
+	// at the user's first `worktree create`. A subdir fragment loads
+	// through the worktree path so the hierarchical merge sees it.
+	var loadErr error
+	if root, rerr := DiscoverRepoRoot(cwd); rerr == nil && root != cwd {
+		_, loadErr = resolve.LoadResolvedForWorktree(root, cwd)
+	} else {
+		_, loadErr = resolve.LoadResolved(cwd)
+	}
+	if loadErr != nil {
+		return fmt.Errorf("the scaffolded config does not load (report this): %w", loadErr)
 	}
 	if !daemonAutoStartInstalled() {
 		PrintHint("install the daemon (one-time): treeman daemon install")
@@ -1499,6 +1513,34 @@ func printInitSummary(detected []framework.Spec, engines []string) {
 		PrintHint("activate one non-interactively:  treeman init --force --engine mysql,postgres")
 		PrintHint("or pick from a picker:            treeman init --force --interactive")
 	}
+}
+
+// guardSubdirInit implements the monorepo-subdir guardrail (#66):
+// `init` inside a repo subdir scaffolds a hierarchical fragment, which
+// only works when the root config already exists — refuse otherwise,
+// pointing at the root.
+func guardSubdirInit(cwd string) error {
+	root, err := DiscoverRepoRoot(cwd)
+	if err != nil {
+		root = ""
+	}
+	if root == "" || root == cwd {
+		// Not inside a recognizable repo (or already at its root) — the
+		// plain scaffold path handles both, errors included.
+		return nil
+	}
+	if _, statErr := os.Stat(filepath.Join(root, ".treeman.yaml")); statErr != nil {
+		rel, _ := filepath.Rel(root, cwd)
+		return fmt.Errorf(
+			"%s is inside the treeman repo rooted at %s, which has no .treeman.yaml yet — run `treeman init` at the repo root first; a %s fragment only extends the root config",
+			cwd,
+			root,
+			filepath.Join(rel, ".treeman.yaml"),
+		)
+	}
+	rel, _ := filepath.Rel(root, cwd)
+	PrintInfo("scaffolding a hierarchical fragment: it applies to worktrees under %s only", rel)
+	return nil
 }
 
 // enginesForScaffold parses --engine (comma-separated, trimmed).

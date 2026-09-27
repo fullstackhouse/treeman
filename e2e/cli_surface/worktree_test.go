@@ -588,6 +588,37 @@ func TestInitEngineAndInteractive(t *testing.T) {
 		}
 	})
 
+	t.Run("init inside a subdir refuses without a root config", func(t *testing.T) {
+		repo := newGitRepo(t)
+		if err := os.MkdirAll(filepath.Join(repo, "services", "api"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		e := newEnv(t)
+		res := e.run(t, filepath.Join(repo, "services", "api"), "init")
+		if res.err == nil {
+			t.Fatalf("init in a subdir without a root config must fail:\n%s", res.stdout+res.stderr)
+		}
+		combined := res.stdout + res.stderr
+		if !strings.Contains(combined, "repo root") {
+			t.Errorf("refusal should point at the repo root:\n%s", combined)
+		}
+		if _, err := os.Stat(filepath.Join(repo, "services", "api", ".treeman.yaml")); err == nil {
+			t.Errorf("no fragment should be written when refusing")
+		}
+
+		// After the root config exists, the subdir fragment scaffolds.
+		if res := e.run(t, repo, "init"); res.err != nil {
+			t.Fatalf("root init: %v", res.stderr)
+		}
+		frag := e.run(t, filepath.Join(repo, "services", "api"), "init")
+		if frag.err != nil {
+			t.Fatalf("fragment init with root config present: %v\n%s", frag.err, frag.stdout+frag.stderr)
+		}
+		if _, err := os.Stat(filepath.Join(repo, "services", "api", ".treeman.yaml")); err != nil {
+			t.Errorf("fragment should be written: %v", err)
+		}
+	})
+
 	t.Run("--interactive declines without a TTY and still scaffolds", func(t *testing.T) {
 		repo := newGitRepo(t)
 		e := newEnv(t)
