@@ -421,15 +421,14 @@ func runTaskMainPurgeDBs(ctx context.Context, st *State, task rpc.Task) (json.Ra
 	if current := detectBranch(task.RepoPath); current != "" && !slices.Contains(branches, current) {
 		branches = append(branches, current)
 	}
-	var purged int
+	slugs := make([]string, 0, len(branches))
 	for _, branch := range branches {
-		sl := slug.ForMain(task.RepoPath, branch)
-		if err := prepare.TeardownDatabases(ctx, &cfg, sl.Value, repoID, 0, st.Store); err != nil {
-			slog.Warn("main purge", "slug", sl.Value, "err", err)
-			continue
-		}
-		purged++
+		slugs = append(slugs, slug.ForMain(task.RepoPath, branch).Value)
 	}
+	// One connection per engine family for the whole batch — long
+	// branch history otherwise pays a full dial + handshake per branch
+	// per engine to drop databases that mostly don't exist (#88).
+	purged := prepare.TeardownSlugsConnReuse(ctx, &cfg, slugs, repoID, 0, st.Store)
 	_ = st.Store.WriteEvent(ctx, store.LevelInfo, store.EvtMainPurge,
 		fmt.Sprintf("tore down DBs for %d branch(es)", purged), repoID, 0, "", 0, nil)
 	return json.Marshal(map[string]any{"purged": purged})

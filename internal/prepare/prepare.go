@@ -16,6 +16,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -3495,6 +3496,115 @@ func TeardownDatabases(
 		})
 	}
 	return g.Wait()
+}
+
+// connPool holds one live connection per engine family for batch
+// teardowns: dialing per database means N x engines full
+// connect + ping + container-resolve handshakes, which dominates a
+// main-wt purge over long branch history (#88).
+type connPool map[engine.Family]engineconn.Conn
+
+func (p connPool) get(
+	ctx context.Context,
+	cfg *config.Config,
+	fam engine.Family,
+	connect func(context.Context, *config.Config, engine.Family) (engineconn.Conn, bool, error),
+) (engineconn.Conn, error) {
+	if c, ok := p[fam]; ok {
+		return c, nil
+	}
+	conn, _, err := connect(ctx, cfg, fam)
+	if err != nil {
+		return nil, err
+	}
+	p[fam] = conn
+	return conn, nil
+}
+
+func (p connPool) closeAll() {
+	for _, c := range p {
+		_ = c.Close()
+	}
+}
+
+// TeardownSlugsConnReuse tears down every slug's namespaces for all
+// configured databases, reusing ONE connection per engine family
+// across the whole batch: #configured engines connects total instead
+// of len(slugs) x #engines. Event shapes match the single-slug
+// TeardownDatabases path; per-slug errors are warned + skipped (a bad
+// branch must not strand the rest) and the returned count is how many
+// slugs tore down without any family-level error.
+func TeardownSlugsConnReuse(
+	ctx context.Context,
+	cfg *config.Config,
+	slugs []string,
+	repoID, worktreeID int64,
+	st *store.Store,
+) int {
+	return teardownSlugsVia(ctx, cfg, slugs, repoID, worktreeID, st, engineconn.Connect)
+}
+
+// teardownSlugsVia is the testable core of TeardownSlugsConnReuse —
+// `connect` is injectable so the connection-reuse count is assertable
+// without a live engine.
+func teardownSlugsVia(
+	ctx context.Context,
+	cfg *config.Config,
+	slugs []string,
+	repoID, worktreeID int64,
+	st *store.Store,
+	connect func(context.Context, *config.Config, engine.Family) (engineconn.Conn, bool, error),
+) int {
+	pool := connPool{}
+	defer pool.closeAll()
+
+	purged := 0
+	for _, sl := range slugs {
+		tplCtx := template.FromSlug(slug.Slug{Value: sl, Source: slug.SourceTicket})
+		failed := false
+		for _, d := range cfg.Databases {
+			// Branch-scoped databases tear down through the swap layer,
+			// which owns its connection lifecycle — fall back to it.
+			if d.BranchScoped {
+				if err := teardownBranchScoped(ctx, cfg, d, repoID, worktreeID, st); err != nil {
+					slog.Warn("batch teardown", "slug", sl, "engine", d.Engine, "err", err)
+					failed = true
+				}
+				continue
+			}
+			fam, ok := engine.Canonical(d.Engine)
+			if !ok || !engineconn.Configured(cfg, fam) {
+				continue
+			}
+			tmpl := d.NameTemplate
+			if fam.Scope() == engine.ScopePrefix {
+				if d.KeyPrefix == "" {
+					continue
+				}
+				tmpl = d.KeyPrefix
+			}
+			target, err := template.Render(tmpl, tplCtx)
+			if err != nil {
+				slog.Warn("batch teardown", "slug", sl, "engine", d.Engine, "err", err)
+				failed = true
+				continue
+			}
+			conn, err := pool.get(ctx, cfg, fam, connect)
+			if err != nil {
+				slog.Warn("batch teardown connect", "engine", string(fam), "err", err)
+				failed = true
+				continue
+			}
+			if err := teardownGeneric(ctx, string(fam), target, sl, repoID, worktreeID, st, conn.DropMatching); err != nil {
+				slog.Warn("batch teardown", "slug", sl, "engine", d.Engine, "err", err)
+				failed = true
+			}
+		}
+		if !failed {
+			purged++
+		}
+	}
+	return purged
 }
 
 func teardownOne(
