@@ -251,24 +251,47 @@ func liveWorktreePaths(ctx context.Context, repoRoot string) []string {
 	return paths
 }
 
-// wtSwitch — `treeman worktree switch [branch]` (was the zsh `gwt`). Switches
-// to or creates a branch's worktree, routing through the same
-// checkout policy as `wt go --checkout`. With no branch it opens the
-// interactive picker + branch wizard. Prints the destination path on
-// stdout for the shell shim: `cd "$(treeman worktree switch …)"`.
+// wtSwitch — `treeman worktree switch [branch]`, the legacy zsh `gwt`
+// spelling, consolidated into `go --checkout` (#91). Same flag set and
+// ShellComplete as `go` (built from it), the same checkout policy, and
+// the same stdout contract (bare destination path for the cd shim).
+// Hidden so `worktree --help` shows one navigation entry. The one
+// intentional difference: a bare `switch` opens the interactive picker
+// instead of erroring like a bare `go`, preserving the old TTY flow.
+// With a branch, unknown bare names still route through the branch
+// wizard instead of creating a literally-named typo branch.
 func wtSwitch() *cli.Command {
-	return &cli.Command{
-		Name:      "switch",
-		Usage:     "switch to or create a branch's worktree (prints dest path for cd)",
-		ArgsUsage: "[branch]",
-		Flags: []cli.Flag{
-			&cli.StringFlag{Name: "repo", Aliases: []string{"r"}},
-			&cli.StringFlag{Name: "from", Usage: "base branch when creating"},
-			&cli.BoolFlag{Name: "no-fetch", Usage: "skip the pre-checkout fetch"},
-		},
-		ShellComplete: branchArgComplete,
-		Action:        wtSwitchAction,
+	cmd := wtGo()
+	cmd.Name = "switch"
+	cmd.Hidden = true
+	cmd.Usage = "legacy spelling of `go --checkout` (checkout policy; prints dest path for cd)"
+	cmd.Action = func(ctx context.Context, c *cli.Command) error {
+		if c.NArg() < 1 {
+			repoRoot, err := resolveRepo(c.String("repo"))
+			if err != nil {
+				return err
+			}
+			return switchInteractive(ctx, repoRoot, c.String("from"), c.Bool("no-fetch"), checkoutRoute)
+		}
+		// Re-enter `go` with --checkout forced on so the two spellings
+		// share one code path end to end.
+		argv := []string{"go", "--checkout"}
+		argv = append(argv, c.Args().Slice()...)
+		if c.Bool("create") {
+			argv = append(argv, "--create")
+		}
+		if c.Bool("no-fetch") {
+			argv = append(argv, "--no-fetch")
+		}
+		if v := c.String("from"); v != "" {
+			argv = append(argv, "--from", v)
+		}
+		if v := c.String("repo"); v != "" {
+			argv = append(argv, "--repo", v)
+		}
+		return wtGo().Run(ctx, argv)
 	}
+	return cmd
 }
 
 func wtCreate() *cli.Command {
@@ -1391,9 +1414,12 @@ func wtPrev() *cli.Command {
 // last_visited_at on every successful resolution so `wt prev` works.
 func wtGo() *cli.Command {
 	return &cli.Command{
-		Name:          "go",
-		Usage:         "resolve/create/checkout a worktree by name or branch (use as cd \"$(treeman worktree go …)\")",
-		ArgsUsage:     "<name-or-branch>",
+		Name:      "go",
+		Usage:     "resolve/create/checkout a worktree by name or branch (use as cd \"$(treeman worktree go …)\")",
+		ArgsUsage: "<name-or-branch>",
+		Description: `The navigation primitive: pure path resolution by default, --create to
+spawn the worktree, --checkout for full branch routing (the policy the
+legacy 'switch' spelling shares).`,
 		ShellComplete: worktreeArgComplete,
 		Flags: []cli.Flag{
 			&cli.BoolFlag{Name: "create", Usage: "create the worktree if nothing matches"},

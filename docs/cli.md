@@ -172,6 +172,12 @@ print previously-visited worktree (registry-tracked; cross-shell)
 
 resolve/create/checkout a worktree by name or branch (use as cd "$(treeman worktree go …)")
 
+```
+The navigation primitive: pure path resolution by default, --create to
+spawn the worktree, --checkout for full branch routing (the policy the
+legacy 'switch' spelling shares).
+```
+
 | Flag | Usage |
 |---|---|
 | `--create` | create the worktree if nothing matches |
@@ -179,16 +185,6 @@ resolve/create/checkout a worktree by name or branch (use as cd "$(treeman workt
 | `--from` | base branch (with --create/--checkout) |
 | `-r`, `--repo` |  |
 | `--no-fetch` | skip the pre-checkout `git fetch origin <base>` |
-
-### `treeman worktree switch`
-
-switch to or create a branch's worktree (prints dest path for cd)
-
-| Flag | Usage |
-|---|---|
-| `-r`, `--repo` |  |
-| `--from` | base branch when creating |
-| `--no-fetch` | skip the pre-checkout fetch |
 
 ### `treeman worktree prune`
 

@@ -511,6 +511,53 @@ func TestWtDeleteBatchConfirm(t *testing.T) {
 	}
 }
 
+// TestWtSwitchConsolidatedIntoGo pins the #91 consolidation: the
+// legacy `switch` spelling produces the same stdout as `go --checkout`
+// for the same input, and `worktree --help` lists one navigation entry
+// (switch is hidden, not a second overlapping command).
+func TestWtSwitchConsolidatedIntoGo(t *testing.T) {
+	repo := newGitRepo(t)
+	e := newEnv(t)
+	t.Cleanup(func() { stopDaemon(t, e) })
+	writeConfig(t, repo, minimalConfig)
+	wtA := filepath.Join(repo, ".worktrees", "feat_a")
+	mustGit(t, repo, "worktree", "add", "-b", "feature/a", wtA, "HEAD")
+	res := e.run(t, wtA, "worktree", "register", "--branch", "feature/a")
+	if res.err != nil {
+		t.Fatalf("register: %v\nstderr:\n%s", res.err, res.stderr)
+	}
+
+	t.Run("switch and go --checkout print the same path", func(t *testing.T) {
+		viaSwitch := e.run(t, repo, "worktree", "switch", "feature/a")
+		viaGo := e.run(t, repo, "worktree", "go", "--checkout", "feature/a")
+		if viaSwitch.err != nil {
+			t.Fatalf("switch: %v\nstderr:\n%s", viaSwitch.err, viaSwitch.stderr)
+		}
+		if viaGo.err != nil {
+			t.Fatalf("go --checkout: %v\nstderr:\n%s", viaGo.err, viaGo.stderr)
+		}
+		if strings.TrimSpace(viaSwitch.stdout) != wtA {
+			t.Errorf("switch stdout = %q, want %q", strings.TrimSpace(viaSwitch.stdout), wtA)
+		}
+		if strings.TrimSpace(viaSwitch.stdout) != strings.TrimSpace(viaGo.stdout) {
+			t.Errorf("switch and go --checkout diverge:\nswitch: %q\ngo:     %q", viaSwitch.stdout, viaGo.stdout)
+		}
+	})
+
+	t.Run("help shows one navigation entry", func(t *testing.T) {
+		res := e.run(t, repo, "worktree", "--help")
+		if res.err != nil {
+			t.Fatalf("worktree --help: %v\nstderr:\n%s", res.err, res.stderr)
+		}
+		if strings.Contains(res.stdout+res.stderr, "switch to or create a branch's worktree") {
+			t.Errorf("legacy switch entry still advertised in help:\n%s", res.stdout+res.stderr)
+		}
+		if !strings.Contains(res.stdout+res.stderr, "worktree go") {
+			t.Errorf("go entry missing from help:\n%s", res.stdout+res.stderr)
+		}
+	})
+}
+
 // ── treeman wt alias ──────────────────────────────────────────
 
 func TestWtAlias(t *testing.T) {
