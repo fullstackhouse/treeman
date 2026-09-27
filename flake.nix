@@ -20,11 +20,14 @@
         # nixpkgs bump moves the linter's toolchain, that error is the
         # signal to bump this line. Not used for the package build, which
         # goes through buildGoModule's own toolchain.
+        # Not used for the package build any more: go.mod requires go
+        # >= 1.27 (#114) and buildGoModule's default nixpkgs toolchain
+        # lags that, so the package build below pins go_1_27 as well.
         shellGo = pkgs.go_1_27;
 
-        treeman = pkgs.buildGoModule {
+        treeman = pkgs.buildGoModule.override { go = pkgs.go_1_27; } {
           pname = "treeman";
-          version = "2.5.93";
+          version = "2.5.94";
           src = ./.;
           # buildGoModule fetches Go deps through the module proxy and
           # hashes the resulting vendor tree; `vendorHash` pins that
@@ -46,7 +49,7 @@
           ldflags = [
             "-s"
             "-w"
-            "-X github.com/stubbedev/treeman/internal/version.Version=2.5.93"
+            "-X github.com/stubbedev/treeman/internal/version.Version=2.5.94"
           ];
           doCheck = true;
         };
