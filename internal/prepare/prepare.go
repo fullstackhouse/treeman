@@ -647,7 +647,7 @@ func RunFiltered(
 			// next cache hit can skip the restore entirely (branch-scoped
 			// outcomes carry no fingerprint and skip the record).
 			if !o.CacheHit && o.Fingerprint != "" && o.SourceDB != "" {
-				_ = st.SetTemplateBuilt(gctx, worktreeID, o.SourceDB, d.Engine, o.Fingerprint)
+				_ = st.SetTemplateBuilt(gctx, worktreeID, o.SourceDB, d.Engine, d.Connection, o.Fingerprint)
 			}
 			results[i] = o
 			hasResult[i] = true
@@ -714,7 +714,7 @@ func prepareOneEngine(
 	return Outcome{}, nil
 }
 
-//nolint:funlen // mirrors the linear cache-hit / incremental / cold-build / fanout flow used by every engine; extracting helpers just spreads the same conditions across functions
+//nolint:funlen,cyclop // mirrors the linear cache-hit / incremental / cold-build / fanout flow used by every engine; extracting helpers just spreads the same conditions across functions
 func prepareMySQL(
 	ctx context.Context,
 	cfg *config.Config,
@@ -731,23 +731,27 @@ func prepareMySQL(
 	if err != nil {
 		return Outcome{}, fmt.Errorf("render name_template: %w", err)
 	}
-	if cfg.Connections.Mysql == nil {
+	mysqlConn, err := cfg.Connections.ResolveMysql(d.Connection)
+	if err != nil {
+		return Outcome{}, err
+	}
+	if mysqlConn == nil {
 		return emitPrepareSkipped(ctx, st, repoID, worktreeID, d.Engine, sourceDB,
 			"connections.mysql not configured"), nil
 	}
 
-	drv, err := dbmysql.Connect(ctx, *cfg.Connections.Mysql)
+	drv, err := dbmysql.Connect(ctx, *mysqlConn)
 	if err != nil {
 		return Outcome{}, err
 	}
 	drv.SetPhysicalCloneMinBytes(d.PhysicalCloneMinBytes)
 	defer func() { _ = drv.Close() }()
 
-	// Probe keys need only the engine family: a config carries at most
-	// one connection per engine, so within one run the family IS the
-	// server identity.
-	version, _ := cachedProbe(ctx, "mysql-version", func() (string, error) { return drv.EngineVersion(ctx) })
-	maxConns, _ := cachedProbe(ctx, "mysql-maxconns", func() (int, error) { return drv.MaxConnections(ctx) })
+	// Probe keys ride the connection selector: two entries on one
+	// family can target different servers (#44), so the shared probe
+	// cache must not hand server A's version/max_conns to server B.
+	version, _ := cachedProbe(ctx, "mysql-version:"+d.Connection, func() (string, error) { return drv.EngineVersion(ctx) })
+	maxConns, _ := cachedProbe(ctx, "mysql-maxconns:"+d.Connection, func() (int, error) { return drv.MaxConnections(ctx) })
 
 	// branch_scoped databases bypass the fingerprint template cache
 	// entirely — their content is per-branch live data swapped through
@@ -760,7 +764,7 @@ func prepareMySQL(
 			migrateFP: computeSnapshotKey(ctx, st, d, worktreePath, version).Fingerprint(),
 			eng:       &branchEngine{drv: mysqlNS{drv}, scope: scopeName, engine: "mysql"},
 			loadDump: func(ctx context.Context, active string, dump dumpFile) error {
-				_, e := dumpload.LoadMySQL(ctx, drv.DB, cfg.Connections.Mysql, active, dump.Path)
+				_, e := dumpload.LoadMySQL(ctx, drv.DB, mysqlConn, active, dump.Path)
 				return e
 			},
 		})
@@ -832,7 +836,7 @@ func prepareMySQL(
 			return nil
 		},
 	}
-	dumpKey := dumpOnlySnapshotKey(d.Engine, version, key.DumpHashHex)
+	dumpKey := dumpOnlySnapshotKey(d.Engine, d.Connection, version, key.DumpHashHex)
 
 	// Incremental path: try to find a content-PREFIX ancestor template
 	// (same engine/version/dump/commands; every input vector a prefix
@@ -890,7 +894,7 @@ func prepareMySQL(
 	if err := mysqlColdBuildSteps(
 		ctx,
 		drv,
-		cfg,
+		mysqlConn,
 		d,
 		tplCtx,
 		worktreePath,
@@ -1041,7 +1045,17 @@ func cacheHitGeneric(
 	// it, every finalize re-restored the source + every clone from the
 	// template even though the inputs hadn't changed: ~90s of I/O on a
 	// 16-clone repo per HEAD move.)
-	if restored := templateBuiltTargets(ctx, st, exists, worktreeID, sourceDB, d.Engine, clones, key.Fingerprint()); restored {
+	if restored := templateBuiltTargets(
+		ctx,
+		st,
+		exists,
+		worktreeID,
+		sourceDB,
+		d.Engine,
+		d.Connection,
+		clones,
+		key.Fingerprint(),
+	); restored {
 		ms := time.Since(started).Milliseconds()
 		_ = st.WriteEvent(ctx, store.LevelInfo, store.EvtPrepareEnd,
 			fmt.Sprintf("cache_hit clones=%d restored=0 duration=%dms", len(clones), ms),
@@ -1078,7 +1092,7 @@ func cacheHitGeneric(
 		d, rec.TemplateName, sourceDB, clones, maxConns, key.Fingerprint()); err != nil {
 		return Outcome{}, false, buildFlight{}, nil //nolint:nilerr // cache-miss fallback: the helper already logged + dropped the stale row; returning the (Outcome{}, false, nil) sentinel makes the engine cold-build
 	}
-	_ = st.SetTemplateBuilt(ctx, worktreeID, sourceDB, d.Engine, key.Fingerprint())
+	_ = st.SetTemplateBuilt(ctx, worktreeID, sourceDB, d.Engine, d.Connection, key.Fingerprint())
 	ms := time.Since(started).Milliseconds()
 	_ = st.WriteEvent(ctx, store.LevelInfo, store.EvtPrepareEnd,
 		fmt.Sprintf("cache_hit clones=%d duration=%dms", len(clones), ms),
@@ -1110,11 +1124,11 @@ func templateBuiltTargets(
 	st *store.Store,
 	exists func(context.Context, string) (bool, error),
 	worktreeID int64,
-	sourceDB, engine string,
+	sourceDB, engine, connection string,
 	clones []string,
 	fingerprint string,
 ) bool {
-	builtFP, ok, err := st.GetTemplateBuilt(ctx, worktreeID, sourceDB, engine)
+	builtFP, ok, err := st.GetTemplateBuilt(ctx, worktreeID, sourceDB, engine, connection)
 	if err != nil || !ok || builtFP != fingerprint {
 		return false
 	}
@@ -1178,7 +1192,7 @@ func runPhase(
 func mysqlColdBuildSteps(
 	ctx context.Context,
 	drv *dbmysql.Driver,
-	cfg *config.Config,
+	mc *config.MysqlConn,
 	d config.DatabaseConfig,
 	tplCtx template.Context,
 	worktreePath string,
@@ -1202,7 +1216,7 @@ func mysqlColdBuildSteps(
 	}
 	for i, dr := range dumps {
 		stepStart := time.Now()
-		strategy, err := dumpload.LoadMySQL(ctx, drv.DB, cfg.Connections.Mysql, sourceDB, dr.Path)
+		strategy, err := dumpload.LoadMySQL(ctx, drv.DB, mc, sourceDB, dr.Path)
 		if err != nil {
 			return fmt.Errorf("load dump %s: %w", dr.Path, err)
 		}
@@ -1705,11 +1719,12 @@ func vectorDelta(ancestor, current map[string]store.InputVector) int {
 }
 
 // dumpOnlySnapshotKey builds the cache key for the post-dump, pre-
-// migrate intermediate template. Keyed ONLY on (engine, version,
-// dumpHash) plus a marker so it never collides with a real template
-// and is excluded from ancestor lookups (see store.DumpOnlyMarkerKey).
-func dumpOnlySnapshotKey(engineName, version, dumpHash string) snapshot.Key {
-	return snapshot.New(engineName, version, "", "", dumpHash,
+// migrate intermediate template. Keyed ONLY on (engine, connection,
+// version, dumpHash) plus a marker so it never collides with a real
+// template and is excluded from ancestor lookups (see
+// store.DumpOnlyMarkerKey).
+func dumpOnlySnapshotKey(engineName, connection, version, dumpHash string) snapshot.Key {
+	return snapshot.New(engineName, version, connection, "", "", dumpHash,
 		map[string]string{store.DumpOnlyMarkerKey: "1"})
 }
 
@@ -2049,19 +2064,25 @@ func preparePostgres(
 	if err != nil {
 		return Outcome{}, fmt.Errorf("render name_template: %w", err)
 	}
-	if cfg.Connections.Postgres == nil {
+	pgConn, err := cfg.Connections.ResolvePostgres(d.Connection)
+	if err != nil {
+		return Outcome{}, err
+	}
+	if pgConn == nil {
 		return emitPrepareSkipped(ctx, st, repoID, worktreeID, d.Engine, sourceDB,
 			"connections.postgres not configured"), nil
 	}
 
-	drv, err := dbpostgres.Connect(ctx, *cfg.Connections.Postgres)
+	drv, err := dbpostgres.Connect(ctx, *pgConn)
 	if err != nil {
 		return Outcome{}, err
 	}
 	defer func() { _ = drv.Close() }()
 
-	version, _ := cachedProbe(ctx, "postgres-version", func() (string, error) { return drv.EngineVersion(ctx) })
-	maxConns, _ := cachedProbe(ctx, "postgres-maxconns", func() (int, error) { return drv.MaxConnections(ctx) })
+	// Probe keys ride the connection selector — different servers must
+	// not share probe results (see prepareMySQL, #44).
+	version, _ := cachedProbe(ctx, "postgres-version:"+d.Connection, func() (string, error) { return drv.EngineVersion(ctx) })
+	maxConns, _ := cachedProbe(ctx, "postgres-maxconns:"+d.Connection, func() (int, error) { return drv.MaxConnections(ctx) })
 
 	if d.BranchScoped {
 		return runBranchScoped(ctx, branchScopedArgs{
@@ -2075,7 +2096,7 @@ func preparePostgres(
 					return e
 				}
 				defer func() { _ = scoped.Close() }()
-				_, e = dumpload.LoadPostgres(ctx, scoped, cfg.Connections.Postgres, active, dump.Path)
+				_, e = dumpload.LoadPostgres(ctx, scoped, pgConn, active, dump.Path)
 				return e
 			},
 		})
@@ -2140,7 +2161,7 @@ func preparePostgres(
 		snapshotRestore: drv.SnapshotRestore,
 		snapshotCreate:  drv.SnapshotCreate,
 	}
-	dumpKey := dumpOnlySnapshotKey(d.Engine, version, key.DumpHashHex)
+	dumpKey := dumpOnlySnapshotKey(d.Engine, d.Connection, version, key.DumpHashHex)
 
 	out, done, err = tryIncrementalBuild(ctx, cfg, d, tplCtx, worktreePath, st,
 		repoID, worktreeID, sourceDB, templateName, version, maxConns, key, inputs,
@@ -2166,7 +2187,7 @@ func preparePostgres(
 	if err := postgresColdBuildSteps(
 		ctx,
 		drv,
-		cfg,
+		pgConn,
 		d,
 		tplCtx,
 		worktreePath,
@@ -2230,7 +2251,7 @@ func preparePostgres(
 func postgresColdBuildSteps(
 	ctx context.Context,
 	drv *dbpostgres.Driver,
-	cfg *config.Config,
+	pc *config.PostgresConn,
 	d config.DatabaseConfig,
 	tplCtx template.Context,
 	worktreePath string,
@@ -2265,7 +2286,7 @@ func postgresColdBuildSteps(
 		}
 		for i, dr := range dumps {
 			stepStart := time.Now()
-			strategy, lerr := dumpload.LoadPostgres(ctx, scoped, cfg.Connections.Postgres, sourceDB, dr.Path)
+			strategy, lerr := dumpload.LoadPostgres(ctx, scoped, pc, sourceDB, dr.Path)
 			if lerr != nil {
 				_ = scoped.Close()
 				return fmt.Errorf("load dump %s: %w", dr.Path, lerr)
@@ -2337,17 +2358,21 @@ func prepareMongo(
 	if err != nil {
 		return Outcome{}, fmt.Errorf("render name_template: %w", err)
 	}
-	if cfg.Connections.Mongodb == nil {
+	mongoConn, err := cfg.Connections.ResolveMongodb(d.Connection)
+	if err != nil {
+		return Outcome{}, err
+	}
+	if mongoConn == nil {
 		return emitPrepareSkipped(ctx, st, repoID, worktreeID, d.Engine, sourceDB,
 			"connections.mongodb not configured"), nil
 	}
-	drv, err := dbmongo.Connect(ctx, *cfg.Connections.Mongodb)
+	drv, err := dbmongo.Connect(ctx, *mongoConn)
 	if err != nil {
 		return Outcome{}, err
 	}
 	defer func() { _ = drv.Close(ctx) }()
 
-	version, _ := cachedProbe(ctx, "mongo-version", func() (string, error) { return drv.EngineVersion(ctx) })
+	version, _ := cachedProbe(ctx, "mongo-version:"+d.Connection, func() (string, error) { return drv.EngineVersion(ctx) })
 
 	if d.BranchScoped {
 		return runBranchScoped(ctx, branchScopedArgs{
@@ -2358,7 +2383,7 @@ func prepareMongo(
 			loadDump: func(ctx context.Context, active string, dump dumpFile) error {
 				// Per-entry SourceDB: each dump in the list can carry its own
 				// `source_db:` for `--nsFrom=<source_db>.* --nsTo=<active>.*`.
-				_, e := dbmongo.Restore(ctx, cfg.Connections.Mongodb, active, dump.SourceDB, dump.Path)
+				_, e := dbmongo.Restore(ctx, mongoConn, active, dump.SourceDB, dump.Path)
 				return e
 			},
 		})
@@ -2412,7 +2437,19 @@ func prepareMongo(
 		return out, err
 	}
 
-	if err := mongoColdBuildSteps(ctx, drv, cfg, d, tplCtx, worktreePath, st, repoID, worktreeID, sourceDB, inheritedEnv); err != nil {
+	if err := mongoColdBuildSteps(
+		ctx,
+		drv,
+		mongoConn,
+		d,
+		tplCtx,
+		worktreePath,
+		st,
+		repoID,
+		worktreeID,
+		sourceDB,
+		inheritedEnv,
+	); err != nil {
 		return Outcome{}, err
 	}
 	snapStart := time.Now()
@@ -2459,7 +2496,7 @@ func prepareMongo(
 func mongoColdBuildSteps(
 	ctx context.Context,
 	drv *dbmongo.Driver,
-	cfg *config.Config,
+	mc *config.MongoConn,
 	d config.DatabaseConfig,
 	tplCtx template.Context,
 	worktreePath string,
@@ -2484,7 +2521,7 @@ func mongoColdBuildSteps(
 	}
 	for i, dr := range dumps {
 		stepStart := time.Now()
-		strategy, rerr := dbmongo.Restore(ctx, cfg.Connections.Mongodb, sourceDB, dr.SourceDB, dr.Path)
+		strategy, rerr := dbmongo.Restore(ctx, mc, sourceDB, dr.SourceDB, dr.Path)
 		if rerr != nil {
 			return fmt.Errorf("mongo restore %s: %w", dr.Path, rerr)
 		}
@@ -2555,7 +2592,11 @@ func prepareRedis(
 	repoID, worktreeID int64,
 	inheritedEnv map[string]string,
 ) (Outcome, error) {
-	if cfg.Connections.Redis == nil {
+	redisConn, err := cfg.Connections.ResolveRedis(d.Connection)
+	if err != nil {
+		return Outcome{}, err
+	}
+	if redisConn == nil {
 		// No sourceDB to render here — KeyPrefix is the source identifier
 		// for redis, and rendering it before the skip is harmless but
 		// noisy in the event payload, so pass the raw prefix template.
@@ -2565,7 +2606,7 @@ func prepareRedis(
 	if d.KeyPrefix == "" {
 		return Outcome{}, errors.New("redis: key_prefix required")
 	}
-	drv, err := dbredis.Connect(ctx, *cfg.Connections.Redis)
+	drv, err := dbredis.Connect(ctx, *redisConn)
 	if err != nil {
 		return Outcome{}, err
 	}
@@ -2590,7 +2631,7 @@ func prepareRedis(
 		})
 	}
 
-	return prepareRedisPrefix(ctx, cfg, d, drv, tplCtx, worktreePath, st, repoID, worktreeID, inheritedEnv)
+	return prepareRedisPrefix(ctx, cfg, d, redisConn, drv, tplCtx, worktreePath, st, repoID, worktreeID, inheritedEnv)
 }
 
 // prepareRedisPrefix is the modern path — prefix-isolated keys in
@@ -2599,6 +2640,7 @@ func prepareRedisPrefix(
 	ctx context.Context,
 	cfg *config.Config,
 	d config.DatabaseConfig,
+	rc *config.RedisConn,
 	drv *dbredis.Driver,
 	tplCtx template.Context,
 	worktreePath string,
@@ -2611,7 +2653,7 @@ func prepareRedisPrefix(
 	if err != nil {
 		return Outcome{}, fmt.Errorf("render key_prefix: %w", err)
 	}
-	version, _ := cachedProbe(ctx, "redis-version", func() (string, error) { return drv.EngineVersion(ctx) })
+	version, _ := cachedProbe(ctx, "redis-version:"+d.Connection, func() (string, error) { return drv.EngineVersion(ctx) })
 	key, inputs := computeKeyAndVectors(ctx, st, d, worktreePath, version)
 	templatePrefix := "_tm:" + key.Fingerprint()[:16] + ":"
 
@@ -2676,7 +2718,7 @@ func prepareRedisPrefix(
 	}
 
 	// Cold build: drop source, run seed, snapshot template, fanout.
-	if err := redisColdBuildSteps(ctx, drv, cfg, d, tplCtx, worktreePath, st, repoID, worktreeID, sourcePrefix, inheritedEnv); err != nil {
+	if err := redisColdBuildSteps(ctx, drv, rc, d, tplCtx, worktreePath, st, repoID, worktreeID, sourcePrefix, inheritedEnv); err != nil {
 		return Outcome{}, err
 	}
 	snapStart := time.Now()
@@ -2722,7 +2764,7 @@ func prepareRedisPrefix(
 func redisColdBuildSteps(
 	ctx context.Context,
 	drv *dbredis.Driver,
-	cfg *config.Config,
+	rc *config.RedisConn,
 	d config.DatabaseConfig,
 	tplCtx template.Context,
 	worktreePath string,
@@ -2754,7 +2796,7 @@ func redisColdBuildSteps(
 	}
 	for i, dr := range dumps {
 		stepStart := time.Now()
-		strategy, lerr := drv.Restore(ctx, cfg.Connections.Redis, sourcePrefix, dr.Path)
+		strategy, lerr := drv.Restore(ctx, rc, sourcePrefix, dr.Path)
 		if lerr != nil {
 			return fmt.Errorf("load dump %s: %w", dr.Path, lerr)
 		}
@@ -2834,16 +2876,20 @@ func prepareES(
 	if err != nil {
 		return Outcome{}, fmt.Errorf("render key_prefix: %w", err)
 	}
-	if cfg.Connections.Elasticsearch == nil {
+	esConnCfg, err := cfg.Connections.ResolveElasticsearch(d.Connection)
+	if err != nil {
+		return Outcome{}, err
+	}
+	if esConnCfg == nil {
 		return emitPrepareSkipped(ctx, st, repoID, worktreeID, d.Engine, sourcePrefix,
 			"connections.elasticsearch not configured"), nil
 	}
-	drv, err := dbes.Connect(ctx, *cfg.Connections.Elasticsearch)
+	drv, err := dbes.Connect(ctx, *esConnCfg)
 	if err != nil {
 		return Outcome{}, err
 	}
 
-	version, _ := cachedProbe(ctx, "es-version", func() (string, error) { return drv.EngineVersion(ctx) })
+	version, _ := cachedProbe(ctx, "es-version:"+d.Connection, func() (string, error) { return drv.EngineVersion(ctx) })
 	if d.BranchScoped {
 		return runBranchScoped(ctx, branchScopedArgs{
 			cfg:          cfg,
@@ -2942,7 +2988,19 @@ func prepareES(
 		return out, err
 	}
 
-	if err := esColdBuildSteps(ctx, drv, cfg, d, tplCtx, worktreePath, st, repoID, worktreeID, sourcePrefix, inheritedEnv); err != nil {
+	if err := esColdBuildSteps(
+		ctx,
+		drv,
+		esConnCfg,
+		d,
+		tplCtx,
+		worktreePath,
+		st,
+		repoID,
+		worktreeID,
+		sourcePrefix,
+		inheritedEnv,
+	); err != nil {
 		return Outcome{}, err
 	}
 	snapStart := time.Now()
@@ -3009,13 +3067,17 @@ func prepareS3(
 	repoID, worktreeID int64,
 	inheritedEnv map[string]string,
 ) (Outcome, error) {
-	if cfg.Connections.S3 == nil {
+	s3Conn2, err := cfg.Connections.ResolveS3(d.Connection)
+	if err != nil {
+		return Outcome{}, err
+	}
+	if s3Conn2 == nil {
 		return Outcome{}, errors.New("connections.s3 not configured")
 	}
 	if d.KeyPrefix == "" {
 		return Outcome{}, errors.New("s3: key_prefix required (renders the bucket name)")
 	}
-	drv, err := dbs3.Connect(ctx, *cfg.Connections.S3)
+	drv, err := dbs3.Connect(ctx, *s3Conn2)
 	if err != nil {
 		return Outcome{}, err
 	}
@@ -3089,7 +3151,7 @@ func prepareFileEngine(
 	if err != nil {
 		return Outcome{}, fmt.Errorf("render name_template: %w", err)
 	}
-	sourceFile, err := dbfile.SourcePathFrom(cfg, worktreePath, rendered)
+	sourceFile, err := dbfile.SourcePathFor(cfg, d.Connection, worktreePath, rendered)
 	if err != nil {
 		return Outcome{}, err
 	}
@@ -3117,7 +3179,7 @@ func prepareFileEngine(
 		if filepath.IsAbs(name) {
 			return name, nil
 		}
-		return dbfile.SourcePathFrom(cfg, worktreePath, name)
+		return dbfile.SourcePathFor(cfg, d.Connection, worktreePath, name)
 	}
 	fileExists := func(_ context.Context, name string) (bool, error) {
 		p, perr := resolveFile(name)
@@ -3210,7 +3272,7 @@ func fileCloneNames(cfg *config.Config, d config.DatabaseConfig, tplCtx template
 	}
 	out := make([]string, len(rendered))
 	for i, r := range rendered {
-		p, perr := dbfile.SourcePathFrom(cfg, worktreePath, r)
+		p, perr := dbfile.SourcePathFor(cfg, d.Connection, worktreePath, r)
 		if perr != nil {
 			return nil, perr
 		}
@@ -3294,7 +3356,7 @@ func fileColdBuildSteps(
 func esColdBuildSteps(
 	ctx context.Context,
 	drv *dbes.Driver,
-	cfg *config.Config,
+	ec *config.EsConn,
 	d config.DatabaseConfig,
 	tplCtx template.Context,
 	worktreePath string,
@@ -3325,7 +3387,7 @@ func esColdBuildSteps(
 	}
 	for i, dr := range dumps {
 		stepStart := time.Now()
-		strategy, rerr := drv.DispatchRestore(ctx, cfg.Connections.Elasticsearch, sourcePrefix, dr.Path)
+		strategy, rerr := drv.DispatchRestore(ctx, ec, sourcePrefix, dr.Path)
 		if rerr != nil {
 			return fmt.Errorf("es restore %s: %w", dr.Path, rerr)
 		}
@@ -3502,7 +3564,7 @@ func keyFromWalks(
 	if cmdHash != "" {
 		inputHashes["__commands__"] = cmdHash
 	}
-	return snapshot.New(d.Engine, engineVersion, "", "", dumpHash, inputHashes)
+	return snapshot.New(d.Engine, engineVersion, d.Connection, "", "", dumpHash, inputHashes)
 }
 
 // FingerprintReport is what InspectFingerprint surfaces to callers
@@ -3736,26 +3798,34 @@ func TeardownDatabases(
 	return g.Wait()
 }
 
-// connPool holds one live connection per engine family for batch
-// teardowns: dialing per database means N x engines full
-// connect + ping + container-resolve handshakes, which dominates a
-// main-wt purge over long branch history (#88).
-type connPool map[engine.Family]engineconn.Conn
+// connPool holds one live connection per (engine family, connection
+// name) for batch teardowns: dialing per database means N x engines
+// full connect + ping + container-resolve handshakes, which dominates
+// a main-wt purge over long branch history (#88). Named blocks dial
+// separately from the singular default (#44).
+type connPool map[teardownConnKey]engineconn.Conn
+
+type teardownConnKey struct {
+	fam  engine.Family
+	name string
+}
 
 func (p connPool) get(
 	ctx context.Context,
 	cfg *config.Config,
 	fam engine.Family,
-	connect func(context.Context, *config.Config, engine.Family) (engineconn.Conn, bool, error),
+	name string,
+	connect func(context.Context, *config.Config, engine.Family, string) (engineconn.Conn, bool, error),
 ) (engineconn.Conn, error) {
-	if c, ok := p[fam]; ok {
+	key := teardownConnKey{fam, name}
+	if c, ok := p[key]; ok {
 		return c, nil
 	}
-	conn, _, err := connect(ctx, cfg, fam)
+	conn, _, err := connect(ctx, cfg, fam, name)
 	if err != nil {
 		return nil, err
 	}
-	p[fam] = conn
+	p[key] = conn
 	return conn, nil
 }
 
@@ -3791,7 +3861,7 @@ func teardownSlugsVia(
 	slugs []string,
 	repoID, worktreeID int64,
 	st *store.Store,
-	connect func(context.Context, *config.Config, engine.Family) (engineconn.Conn, bool, error),
+	connect func(context.Context, *config.Config, engine.Family, string) (engineconn.Conn, bool, error),
 ) int {
 	pool := connPool{}
 	defer pool.closeAll()
@@ -3811,7 +3881,7 @@ func teardownSlugsVia(
 				continue
 			}
 			fam, ok := engine.Canonical(d.Engine)
-			if !ok || !engineconn.Configured(cfg, fam) {
+			if !ok || !engineconn.Configured(cfg, fam, d.Connection) {
 				continue
 			}
 			tmpl := d.NameTemplate
@@ -3827,7 +3897,15 @@ func teardownSlugsVia(
 				failed = true
 				continue
 			}
-			conn, err := pool.get(ctx, cfg, fam, connect)
+			if fam == engine.FamilyFile {
+				target, err = fileTeardownTarget(ctx, cfg, st, worktreeID, d.Connection, target)
+				if err != nil {
+					slog.Warn("batch teardown", "slug", sl, "engine", d.Engine, "err", err)
+					failed = true
+					continue
+				}
+			}
+			conn, err := pool.get(ctx, cfg, fam, d.Connection, connect)
 			if err != nil {
 				slog.Warn("batch teardown connect", "engine", string(fam), "err", err)
 				failed = true
@@ -3875,7 +3953,7 @@ func teardownOne(
 	}
 	// Engine isn't wired up — nothing was ever created. Silent skip,
 	// matching the prepare side.
-	if !engineconn.Configured(cfg, fam) {
+	if !engineconn.Configured(cfg, fam, d.Connection) {
 		return nil
 	}
 	// Name-scoped engines (mysql/postgres/mongo) reap the rendered
@@ -3894,29 +3972,38 @@ func teardownOne(
 	}
 	if fam == engine.FamilyFile {
 		// The file family's "name" is a rendered relative path; resolve
-		// it onto the same base (worktree root or connections.sqlite
-		// .base_dir) prepare used, so teardown reaps the file that was
-		// actually built. The worktree row carries the path — teardown
-		// runs before the row goes away.
-		wtPath, werr := st.WorktreePathByID(ctx, worktreeID)
-		if werr != nil {
-			return werr
-		}
-		var baseDir string
-		if cfg.Connections.Sqlite != nil {
-			baseDir = cfg.Connections.Sqlite.BaseDir
-		}
-		target, err = dbfile.SourcePath(baseDir, wtPath, target)
+		// it onto the same base prepare used, so teardown reaps the
+		// file that was actually built.
+		target, err = fileTeardownTarget(ctx, cfg, st, worktreeID, d.Connection, target)
 		if err != nil {
 			return err
 		}
 	}
-	conn, _, err := engineconn.Connect(ctx, cfg, fam)
+	conn, _, err := engineconn.Connect(ctx, cfg, fam, d.Connection)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = conn.Close() }()
 	return teardownGeneric(ctx, string(fam), target, sl, repoID, worktreeID, st, conn.DropMatching)
+}
+
+// fileTeardownTarget resolves a rendered file-family name_template
+// onto the family's base directory (worktree root or
+// connections.sqlite.base_dir — including per-connection base dirs),
+// using the worktree row's path: teardown runs before the row goes
+// away.
+func fileTeardownTarget(
+	ctx context.Context,
+	cfg *config.Config,
+	st *store.Store,
+	worktreeID int64,
+	connName, rendered string,
+) (string, error) {
+	wtPath, err := st.WorktreePathByID(ctx, worktreeID)
+	if err != nil {
+		return "", err
+	}
+	return dbfile.SourcePathFor(cfg, connName, wtPath, rendered)
 }
 
 // teardownGeneric drops the already-rendered per-worktree `target`

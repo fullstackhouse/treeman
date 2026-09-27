@@ -550,10 +550,13 @@ func siblingKeep(siblings []string) func(string) bool {
 // BUT log a warning so a typo'd engine name doesn't disappear
 // without a trace. Same observability principle as TeardownDatabases'
 // unknown-engine arm.
+//
+//nolint:cyclop // per-family dial dispatch; extracting each arm just relocates the branches
 func connectBranchEngine(
 	ctx context.Context,
 	cfg *config.Config,
 	eng string,
+	connection string,
 	siblings []string,
 	minPhysicalCloneBytes *int64,
 ) (*branchEngine, func(), error) {
@@ -565,38 +568,42 @@ func connectBranchEngine(
 	}
 	switch label {
 	case "mysql":
-		if cfg.Connections.Mysql == nil {
+		mc, rerr := cfg.Connections.ResolveMysql(connection)
+		if rerr != nil || mc == nil {
 			return nil, func() {}, errors.New("connections.mysql not configured")
 		}
-		drv, err := dbmysql.Connect(ctx, *cfg.Connections.Mysql)
+		drv, err := dbmysql.Connect(ctx, *mc)
 		if err != nil {
 			return nil, func() {}, err
 		}
 		drv.SetPhysicalCloneMinBytes(minPhysicalCloneBytes)
 		return &branchEngine{drv: mysqlNS{drv}, scope: scope, engine: label}, func() { _ = drv.Close() }, nil
 	case "postgres":
-		if cfg.Connections.Postgres == nil {
+		pc, rerr := cfg.Connections.ResolvePostgres(connection)
+		if rerr != nil || pc == nil {
 			return nil, func() {}, errors.New("connections.postgres not configured")
 		}
-		drv, err := dbpostgres.Connect(ctx, *cfg.Connections.Postgres)
+		drv, err := dbpostgres.Connect(ctx, *pc)
 		if err != nil {
 			return nil, func() {}, err
 		}
 		return &branchEngine{drv: postgresNS{drv}, scope: scope, engine: label}, func() { _ = drv.Close() }, nil
 	case "mongodb":
-		if cfg.Connections.Mongodb == nil {
+		mc, rerr := cfg.Connections.ResolveMongodb(connection)
+		if rerr != nil || mc == nil {
 			return nil, func() {}, errors.New("connections.mongodb not configured")
 		}
-		drv, err := dbmongo.Connect(ctx, *cfg.Connections.Mongodb)
+		drv, err := dbmongo.Connect(ctx, *mc)
 		if err != nil {
 			return nil, func() {}, err
 		}
 		return &branchEngine{drv: mongoNS{drv}, scope: scope, engine: label}, func() { _ = drv.Close(ctx) }, nil
 	case "redis":
-		if cfg.Connections.Redis == nil {
+		rc, rerr := cfg.Connections.ResolveRedis(connection)
+		if rerr != nil || rc == nil {
 			return nil, func() {}, errors.New("connections.redis not configured")
 		}
-		drv, err := dbredis.Connect(ctx, *cfg.Connections.Redis)
+		drv, err := dbredis.Connect(ctx, *rc)
 		if err != nil {
 			return nil, func() {}, err
 		}
@@ -606,10 +613,11 @@ func connectBranchEngine(
 			engine: label,
 		}, func() { _ = drv.Close() }, nil
 	case "elasticsearch":
-		if cfg.Connections.Elasticsearch == nil {
+		ec, rerr := cfg.Connections.ResolveElasticsearch(connection)
+		if rerr != nil || ec == nil {
 			return nil, func() {}, errors.New("connections.elasticsearch not configured")
 		}
-		drv, err := dbes.Connect(ctx, *cfg.Connections.Elasticsearch)
+		drv, err := dbes.Connect(ctx, *ec)
 		if err != nil {
 			return nil, func() {}, err
 		}
@@ -1372,7 +1380,14 @@ func teardownBranchScoped(
 	if err != nil {
 		return err
 	}
-	eng, closeEng, cerr := connectBranchEngine(ctx, cfg, d.Engine, siblingSlugs(ctx, st, repoID, worktreeID), d.PhysicalCloneMinBytes)
+	eng, closeEng, cerr := connectBranchEngine(
+		ctx,
+		cfg,
+		d.Engine,
+		d.Connection,
+		siblingSlugs(ctx, st, repoID, worktreeID),
+		d.PhysicalCloneMinBytes,
+	)
 	if cerr != nil {
 		return cerr
 	}
@@ -1433,7 +1448,14 @@ func ResetBranchScoped(
 		if err != nil {
 			return fmt.Errorf("render active namespace for %s: %w", d.Engine, err)
 		}
-		eng, closeEng, cerr := connectBranchEngine(ctx, cfg, d.Engine, siblingSlugs(ctx, st, repoID, worktreeID), d.PhysicalCloneMinBytes)
+		eng, closeEng, cerr := connectBranchEngine(
+			ctx,
+			cfg,
+			d.Engine,
+			d.Connection,
+			siblingSlugs(ctx, st, repoID, worktreeID),
+			d.PhysicalCloneMinBytes,
+		)
 		if cerr != nil {
 			return cerr
 		}
@@ -1527,7 +1549,14 @@ func SaveBranchScoped(
 		if err != nil {
 			return saves, fmt.Errorf("render active namespace for %s: %w", d.Engine, err)
 		}
-		eng, closeEng, cerr := connectBranchEngine(ctx, cfg, d.Engine, siblingSlugs(ctx, st, repoID, worktreeID), d.PhysicalCloneMinBytes)
+		eng, closeEng, cerr := connectBranchEngine(
+			ctx,
+			cfg,
+			d.Engine,
+			d.Connection,
+			siblingSlugs(ctx, st, repoID, worktreeID),
+			d.PhysicalCloneMinBytes,
+		)
 		if cerr != nil {
 			return saves, cerr
 		}
@@ -1654,7 +1683,7 @@ func BranchScopedStatus(
 		// Status only probes hash-derived durable namespaces (and reads the
 		// marker), never enumerates or drops the active prefix — so no
 		// sibling filter is needed.
-		eng, closeEng, cerr := connectBranchEngine(ctx, cfg, d.Engine, nil, d.PhysicalCloneMinBytes)
+		eng, closeEng, cerr := connectBranchEngine(ctx, cfg, d.Engine, d.Connection, nil, d.PhysicalCloneMinBytes)
 		if cerr != nil {
 			return nil, cerr
 		}

@@ -224,9 +224,18 @@ func SourcePath(baseDir, worktreePath, rendered string) (string, error) {
 // connections.sqlite block — the one-liner every render site (prepare,
 // teardown, recovery) resolves the family's paths through.
 func SourcePathFrom(cfg *config.Config, worktreePath, rendered string) (string, error) {
+	return SourcePathFor(cfg, "", worktreePath, rendered)
+}
+
+// SourcePathFor is SourcePathFrom for a NAMED connections.sqlite block:
+// `connection: <name>` on the database entry picks which base_dir the
+// per-worktree files live under (#44).
+func SourcePathFor(cfg *config.Config, connName, worktreePath, rendered string) (string, error) {
 	var baseDir string
 	if cfg != nil && cfg.Connections.Sqlite != nil {
-		baseDir = cfg.Connections.Sqlite.BaseDir
+		if sc, err := cfg.Connections.ResolveSqlite(connName); err == nil && sc != nil {
+			baseDir = sc.BaseDir
+		}
 	}
 	return SourcePath(baseDir, worktreePath, rendered)
 }

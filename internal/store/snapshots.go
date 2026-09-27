@@ -35,6 +35,10 @@ type SnapshotRecord struct {
 	MigrationsHash string
 	DumpHash       string
 	LockfileHashes map[string]string
+	// Connection is the `databases[].connection` selector the template
+	// was built through (empty = the singular connections.<family>
+	// block). GC routes the engine-side drop at that server (#44).
+	Connection string
 	// Inputs is the per-input ordered file vector captured at build
 	// time. Keys are input globs (matching the keys used in
 	// LockfileHashes). Empty for snapshots predating the inputs_json
@@ -180,8 +184,8 @@ func (s *Store) RecordSnapshot(ctx context.Context, r SnapshotRecord) error {
 		                      template_name, migrations_hash, dump_hash,
 		                      lockfile_hashes_json, inputs_json,
 		                      size_bytes, created_at,
-		                      last_used_at, use_count, repo_id)
-		VALUES (?, ?, ?, ?, ?, ?, NULLIF(?,''), ?, ?, NULLIF(?,0), ?, ?, ?, ?)
+		                      last_used_at, use_count, repo_id, connection)
+		VALUES (?, ?, ?, ?, ?, ?, NULLIF(?,''), ?, ?, NULLIF(?,0), ?, ?, ?, ?, ?)
 		ON CONFLICT(fingerprint) DO UPDATE SET
 		    template_name        = excluded.template_name,
 		    engine_version       = excluded.engine_version,
@@ -192,10 +196,11 @@ func (s *Store) RecordSnapshot(ctx context.Context, r SnapshotRecord) error {
 		    inputs_json          = excluded.inputs_json,
 		    size_bytes           = excluded.size_bytes,
 		    last_used_at         = excluded.last_used_at,
-		    repo_id              = excluded.repo_id`,
+		    repo_id              = excluded.repo_id,
+		    connection           = excluded.connection`,
 		r.Fingerprint, r.Engine, r.EngineVersion, r.SourceDB,
 		r.TemplateName, r.MigrationsHash, r.DumpHash, string(lockJSON), string(inputsJSON),
-		r.SizeBytes, r.CreatedAt, r.LastUsedAt, r.UseCount, repoID)
+		r.SizeBytes, r.CreatedAt, r.LastUsedAt, r.UseCount, repoID, r.Connection)
 	return err
 }
 
@@ -478,6 +483,9 @@ type SnapshotEvictionCandidate struct {
 	Engine       string
 	TemplateName string
 	SourceDB     string
+	// Connection selects the server the template lives on (empty =
+	// the singular connections block).
+	Connection string
 }
 
 // ListLRUEvictable returns the snapshots above `cap` for a given
@@ -492,7 +500,7 @@ func (s *Store) ListLRUEvictable(ctx context.Context, repoID int64, keep uint32)
 		return nil, nil
 	}
 	rows, err := s.DB.QueryContext(ctx, `
-		SELECT fingerprint, engine, template_name, source_db
+		SELECT fingerprint, engine, template_name, source_db, connection
 		FROM snapshots
 		WHERE repo_id = ?
 		ORDER BY last_used_at DESC
@@ -504,7 +512,7 @@ func (s *Store) ListLRUEvictable(ctx context.Context, repoID int64, keep uint32)
 	var out []SnapshotEvictionCandidate
 	for rows.Next() {
 		var c SnapshotEvictionCandidate
-		if err := rows.Scan(&c.Fingerprint, &c.Engine, &c.TemplateName, &c.SourceDB); err != nil {
+		if err := rows.Scan(&c.Fingerprint, &c.Engine, &c.TemplateName, &c.SourceDB, &c.Connection); err != nil {
 			return nil, err
 		}
 		out = append(out, c)
@@ -556,7 +564,7 @@ func (s *Store) DeleteSnapshot(ctx context.Context, fingerprint string) error {
 // max-age sweep.
 func (s *Store) ListSnapshotsOlderThan(ctx context.Context, cutoffMillis int64) ([]SnapshotEvictionCandidate, error) {
 	rows, err := s.DB.QueryContext(ctx, `
-		SELECT fingerprint, engine, template_name, source_db
+		SELECT fingerprint, engine, template_name, source_db, connection
 		FROM snapshots
 		WHERE last_used_at < ?
 		ORDER BY last_used_at ASC`, cutoffMillis)
@@ -567,7 +575,7 @@ func (s *Store) ListSnapshotsOlderThan(ctx context.Context, cutoffMillis int64) 
 	var out []SnapshotEvictionCandidate
 	for rows.Next() {
 		var c SnapshotEvictionCandidate
-		if err := rows.Scan(&c.Fingerprint, &c.Engine, &c.TemplateName, &c.SourceDB); err != nil {
+		if err := rows.Scan(&c.Fingerprint, &c.Engine, &c.TemplateName, &c.SourceDB, &c.Connection); err != nil {
 			return nil, err
 		}
 		out = append(out, c)
@@ -597,7 +605,7 @@ func (s *Store) ListSnapshotsForRepo(ctx context.Context, repoID int64) ([]Snaps
 		return nil, nil
 	}
 	rows, err := s.DB.QueryContext(ctx, `
-		SELECT fingerprint, engine, template_name, source_db
+		SELECT fingerprint, engine, template_name, source_db, connection
 		FROM snapshots
 		WHERE repo_id = ?
 		ORDER BY last_used_at ASC`, repoID)
@@ -608,7 +616,7 @@ func (s *Store) ListSnapshotsForRepo(ctx context.Context, repoID int64) ([]Snaps
 	var out []SnapshotEvictionCandidate
 	for rows.Next() {
 		var c SnapshotEvictionCandidate
-		if err := rows.Scan(&c.Fingerprint, &c.Engine, &c.TemplateName, &c.SourceDB); err != nil {
+		if err := rows.Scan(&c.Fingerprint, &c.Engine, &c.TemplateName, &c.SourceDB, &c.Connection); err != nil {
 			return nil, err
 		}
 		out = append(out, c)
@@ -636,7 +644,7 @@ func (s *Store) ListSnapshotsBeyondPerSource(ctx context.Context, keep uint32) (
 		return nil, nil
 	}
 	rows, err := s.DB.QueryContext(ctx, `
-		SELECT fingerprint, engine, template_name, source_db
+		SELECT fingerprint, engine, template_name, source_db, connection
 		FROM snapshots s
 		WHERE (
 			SELECT COUNT(*) FROM snapshots s2
@@ -652,7 +660,7 @@ func (s *Store) ListSnapshotsBeyondPerSource(ctx context.Context, keep uint32) (
 	var out []SnapshotEvictionCandidate
 	for rows.Next() {
 		var c SnapshotEvictionCandidate
-		if err := rows.Scan(&c.Fingerprint, &c.Engine, &c.TemplateName, &c.SourceDB); err != nil {
+		if err := rows.Scan(&c.Fingerprint, &c.Engine, &c.TemplateName, &c.SourceDB, &c.Connection); err != nil {
 			return nil, err
 		}
 		out = append(out, c)
@@ -665,7 +673,7 @@ func (s *Store) ListSnapshotsBeyondPerSource(ctx context.Context, keep uint32) (
 // drops from the top until total falls below the cap.
 func (s *Store) ListSnapshotsLargestLRU(ctx context.Context) ([]SnapshotEvictionCandidate, []int64, error) {
 	rows, err := s.DB.QueryContext(ctx, `
-		SELECT fingerprint, engine, template_name, source_db, COALESCE(size_bytes,0)
+		SELECT fingerprint, engine, template_name, source_db, connection, COALESCE(size_bytes,0)
 		FROM snapshots
 		ORDER BY COALESCE(size_bytes,0) DESC, last_used_at ASC`)
 	if err != nil {
@@ -679,7 +687,7 @@ func (s *Store) ListSnapshotsLargestLRU(ctx context.Context) ([]SnapshotEviction
 	for rows.Next() {
 		var c SnapshotEvictionCandidate
 		var sz int64
-		if err := rows.Scan(&c.Fingerprint, &c.Engine, &c.TemplateName, &c.SourceDB, &sz); err != nil {
+		if err := rows.Scan(&c.Fingerprint, &c.Engine, &c.TemplateName, &c.SourceDB, &c.Connection, &sz); err != nil {
 			return nil, nil, err
 		}
 		cands = append(cands, c)

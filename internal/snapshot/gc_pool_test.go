@@ -53,7 +53,7 @@ func TestEvictCandidatesOneDialPerFamily(t *testing.T) {
 
 	var dials atomic.Int64
 	dropped := &[]string{}
-	fake := func(context.Context, *config.Config, engine.Family) (engineconn.Conn, bool, error) {
+	fake := func(context.Context, *config.Config, engine.Family, string) (engineconn.Conn, bool, error) {
 		dials.Add(1)
 		return countingDropConn{dropped: dropped}, true, nil
 	}
@@ -99,7 +99,7 @@ func TestEvictCandidatesSkipsPinned(t *testing.T) {
 	}
 
 	dropped := &[]string{}
-	fake := func(context.Context, *config.Config, engine.Family) (engineconn.Conn, bool, error) {
+	fake := func(context.Context, *config.Config, engine.Family, string) (engineconn.Conn, bool, error) {
 		return countingDropConn{dropped: dropped}, true, nil
 	}
 
@@ -142,7 +142,7 @@ func TestEvictCandidatesSkipsPinned(t *testing.T) {
 func evictCandidatesVia(
 	ctx context.Context, st *store.Store, repoID int64,
 	cands []store.SnapshotEvictionCandidate,
-	connect func(context.Context, *config.Config, engine.Family) (engineconn.Conn, bool, error),
+	connect func(context.Context, *config.Config, engine.Family, string) (engineconn.Conn, bool, error),
 ) {
 	pool := newDropPool(&config.Config{}, connect)
 	defer pool.close()

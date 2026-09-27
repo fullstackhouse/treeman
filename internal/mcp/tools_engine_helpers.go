@@ -73,9 +73,9 @@ func snapshotRecordToMap(r *store.SnapshotRecord) map[string]any {
 // returns a size estimate where the engine exposes one. Errors are
 // silently dropped (exists=false) — the caller surfaces them via the
 // SQLite row's recorded state.
-func probeTemplate(ctx context.Context, cfg *config.Config, eng, template string) (bool, int64, string) {
+func probeTemplate(ctx context.Context, cfg *config.Config, eng, connName, template string) (bool, int64, string) {
 	fam, _ := engine.Canonical(eng)
-	conn, configured, err := engineconn.Connect(ctx, cfg, fam)
+	conn, configured, err := engineconn.Connect(ctx, cfg, fam, connName)
 	if !configured || err != nil {
 		return false, 0, ""
 	}
@@ -114,7 +114,7 @@ func isReservedTemplateName(name string) bool {
 // prefix LIKE/scan; an MCP caller passing a non-reserved string
 // would otherwise reap whatever app namespaces happen to share that
 // prefix.
-func dropTemplate(ctx context.Context, cfg *config.Config, eng, template string) error {
+func dropTemplate(ctx context.Context, cfg *config.Config, eng, connName, template string) error {
 	if !isReservedTemplateName(template) {
 		return fmt.Errorf(
 			"refusing to drop %q: not a treeman-reserved template name (expected one of %v)",
@@ -126,7 +126,7 @@ func dropTemplate(ctx context.Context, cfg *config.Config, eng, template string)
 	if !ok {
 		return fmt.Errorf("unknown engine %q (allowed: %s)", eng, engine.KnownList())
 	}
-	conn, configured, err := engineconn.Connect(ctx, cfg, fam)
+	conn, configured, err := engineconn.Connect(ctx, cfg, fam, connName)
 	if !configured {
 		return fmt.Errorf("connections.%s not configured", fam)
 	}

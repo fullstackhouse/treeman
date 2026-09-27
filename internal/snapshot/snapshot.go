@@ -33,9 +33,12 @@ import (
 // per-repo in YAML). v5 dropped SourceDBName: a template's content is
 // independent of the database name it's restored into, so keying on
 // the name fragmented the cache per-worktree and forced redundant
-// cold builds. Every existing _tm_… template rebuilds once after each
-// bump.
-const FormatVersion uint32 = 5
+// cold builds. v6 added Connection: two entries on one family can
+// target different servers, and a template built on server A must
+// never be cache-hit by an entry pointing at server B — different
+// (family, connection) pairs never share template rows (#44). Every
+// existing _tm_… template rebuilds once after each bump.
+const FormatVersion uint32 = 6
 
 // Key fingerprints a snapshot. Two prepare runs that share every
 // field can reuse the same template DB. The key is content-only — it
@@ -44,6 +47,7 @@ type Key struct {
 	FormatVersion     uint32            `json:"format_version"`
 	Engine            string            `json:"engine"`
 	EngineVersion     string            `json:"engine_version"`
+	Connection        string            `json:"connection,omitempty"`
 	HashMode          string            `json:"hash_mode"`
 	MigrationsHashHex string            `json:"migrations_hash_hex"`
 	DumpHashHex       string            `json:"dump_hash_hex,omitempty"`
@@ -51,7 +55,7 @@ type Key struct {
 }
 
 // New constructs a Key with the format version pinned.
-func New(engine, engineVersion, hashMode, migrationsHash, dumpHash string, lockfileHashes map[string]string) Key {
+func New(engine, engineVersion, connection, hashMode, migrationsHash, dumpHash string, lockfileHashes map[string]string) Key {
 	if lockfileHashes == nil {
 		lockfileHashes = map[string]string{}
 	}
@@ -59,6 +63,7 @@ func New(engine, engineVersion, hashMode, migrationsHash, dumpHash string, lockf
 		FormatVersion:     FormatVersion,
 		Engine:            engine,
 		EngineVersion:     engineVersion,
+		Connection:        connection,
 		HashMode:          hashMode,
 		MigrationsHashHex: migrationsHash,
 		DumpHashHex:       dumpHash,
@@ -90,6 +95,7 @@ func (k Key) Fingerprint() string {
 	for _, s := range []string{
 		k.Engine,
 		k.EngineVersion,
+		k.Connection,
 		k.HashMode,
 		k.MigrationsHashHex,
 		k.DumpHashHex,

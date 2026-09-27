@@ -1439,7 +1439,7 @@ func repairSnapshots(ctx context.Context, st *store.Store, cfg *config.Config, r
 	}
 	orphans := 0
 	for _, r := range rows {
-		exists, _, _ := probeTemplate(ctx, cfg, r.Engine, r.TemplateName)
+		exists, _, _ := probeTemplate(ctx, cfg, r.Engine, r.Connection, r.TemplateName)
 		if !exists {
 			orphans++
 		}

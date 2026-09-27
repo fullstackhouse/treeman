@@ -14,12 +14,12 @@ import (
 // fingerprint is unchanged.
 
 // GetTemplateBuilt returns the fingerprint recorded for (worktree,
-// dbKey, engine), ok=false when no row exists (which the caller treats
-// as "must restore").
-func (s *Store) GetTemplateBuilt(ctx context.Context, worktreeID int64, dbKey, engine string) (string, bool, error) {
+// dbKey, engine, connection), ok=false when no row exists (which the
+// caller treats as "must restore").
+func (s *Store) GetTemplateBuilt(ctx context.Context, worktreeID int64, dbKey, engine, connection string) (string, bool, error) {
 	row := s.DB.QueryRowContext(ctx,
-		`SELECT fingerprint FROM template_db_built WHERE worktree_id = ? AND db_key = ? AND engine = ?`,
-		worktreeID, dbKey, engine)
+		`SELECT fingerprint FROM template_db_built WHERE worktree_id = ? AND db_key = ? AND engine = ? AND connection = ?`,
+		worktreeID, dbKey, engine, connection)
 	var fp string
 	switch err := row.Scan(&fp); {
 	case errors.Is(err, sql.ErrNoRows):
@@ -32,16 +32,16 @@ func (s *Store) GetTemplateBuilt(ctx context.Context, worktreeID int64, dbKey, e
 }
 
 // SetTemplateBuilt upserts the built-at fingerprint for (worktree,
-// dbKey, engine). Called after a successful restore/fan-out or cold
-// build.
-func (s *Store) SetTemplateBuilt(ctx context.Context, worktreeID int64, dbKey, engine, fingerprint string) error {
+// dbKey, engine, connection). Called after a successful restore/fan-out
+// or cold build.
+func (s *Store) SetTemplateBuilt(ctx context.Context, worktreeID int64, dbKey, engine, connection, fingerprint string) error {
 	_, err := s.DB.ExecContext(ctx, `
-		INSERT INTO template_db_built(worktree_id, db_key, engine, fingerprint, updated_at)
-		VALUES (?, ?, ?, ?, ?)
-		ON CONFLICT(worktree_id, db_key, engine) DO UPDATE SET
+		INSERT INTO template_db_built(worktree_id, db_key, engine, connection, fingerprint, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(worktree_id, db_key, engine, connection) DO UPDATE SET
 			fingerprint = excluded.fingerprint,
 			updated_at  = excluded.updated_at`,
-		worktreeID, dbKey, engine, fingerprint, time.Now().UnixMilli())
+		worktreeID, dbKey, engine, connection, fingerprint, time.Now().UnixMilli())
 	return err
 }
 

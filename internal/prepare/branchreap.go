@@ -78,7 +78,7 @@ func ReapBranchDurablesMany(ctx context.Context, cfg *config.Config, st *store.S
 		}
 		// Reap only touches hash-derived durable namespaces, which never
 		// collide with a sibling's prefix — no sibling filter needed.
-		eng, closeEng, err := connectBranchEngine(ctx, cfg, d.Engine, nil, d.PhysicalCloneMinBytes)
+		eng, closeEng, err := connectBranchEngine(ctx, cfg, d.Engine, d.Connection, nil, d.PhysicalCloneMinBytes)
 		if err != nil {
 			slog.Warn("reap durables: connect engine", "engine", d.Engine, "err", err)
 			closeEng()
@@ -193,7 +193,7 @@ func ReapOrphanDurables(ctx context.Context, cfg *config.Config, st *store.Store
 	for eng, rows := range byEngine {
 		// Reap only touches hash-derived durable namespaces by exact name —
 		// no sibling filter needed.
-		be, closeEng, cerr := connectBranchEngine(ctx, cfg, eng, nil, nil)
+		be, closeEng, cerr := connectBranchEngine(ctx, cfg, eng, "", nil, nil)
 		if cerr != nil {
 			slog.Warn("reap orphan durables: connect engine", "engine", eng, "err", cerr)
 			closeEng()
@@ -289,7 +289,7 @@ func ReapUntrackedESDurables(ctx context.Context, cfg *config.Config, st *store.
 	if !hasESBranchScoped(cfg) {
 		return
 	}
-	be, closeEng, err := connectBranchEngine(ctx, cfg, "elasticsearch", nil, nil)
+	be, closeEng, err := connectBranchEngine(ctx, cfg, "elasticsearch", "", nil, nil)
 	if err != nil {
 		slog.Warn("reap untracked es durables: connect engine", "err", err)
 		closeEng()

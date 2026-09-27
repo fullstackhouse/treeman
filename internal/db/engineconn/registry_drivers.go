@@ -2,6 +2,10 @@
 // wired to its connection block and dialer. Adding an engine = one
 // entry here (+ the driver package + the schema/known-alias touchpoints
 // documented in docs/internals.md, #47).
+//
+// Each Connect resolves (family, name) through the config accessors:
+// an empty name picks the singular `connections.<family>` block, a
+// non-empty name picks `connections.<family>.<name>` (#44).
 package engineconn
 
 import (
@@ -17,23 +21,32 @@ import (
 	"github.com/stubbedev/treeman/internal/engine"
 )
 
+//nolint:gocognit,cyclop,funlen // a flat registration table: per-family branches live inside the Connect closures by design (#47)
 func init() {
 	Register(engine.FamilyFile, DriverFactory{
 		// The file family has no server: it is always "configured" —
 		// probe/drop/GC surfaces can act on rendered paths with no
-		// connections block at all.
-		Configured: func(*config.Config) bool { return true },
-		Connect: func(context.Context, *config.Config) (Conn, bool, error) {
+		// connections block at all. A named block still selects the
+		// base_dir for path resolution.
+		Configured: func(*config.Config, string) bool { return true },
+		Connect: func(context.Context, *config.Config, string) (Conn, bool, error) {
 			return fileConn{}, true, nil
 		},
 	})
 	Register(engine.FamilyMySQL, DriverFactory{
-		Configured: func(cfg *config.Config) bool { return cfg.Connections.Mysql != nil },
-		Connect: func(ctx context.Context, cfg *config.Config) (Conn, bool, error) {
-			if cfg.Connections.Mysql == nil {
+		Configured: func(cfg *config.Config, name string) bool {
+			conn, err := cfg.Connections.ResolveMysql(name)
+			return err == nil && conn != nil
+		},
+		Connect: func(ctx context.Context, cfg *config.Config, name string) (Conn, bool, error) {
+			conn, err := cfg.Connections.ResolveMysql(name)
+			if err != nil {
+				return nil, true, err
+			}
+			if conn == nil {
 				return nil, false, nil
 			}
-			d, err := dbmysql.Connect(ctx, *cfg.Connections.Mysql)
+			d, err := dbmysql.Connect(ctx, *conn)
 			if err != nil {
 				return nil, true, err
 			}
@@ -41,12 +54,19 @@ func init() {
 		},
 	})
 	Register(engine.FamilyPostgres, DriverFactory{
-		Configured: func(cfg *config.Config) bool { return cfg.Connections.Postgres != nil },
-		Connect: func(ctx context.Context, cfg *config.Config) (Conn, bool, error) {
-			if cfg.Connections.Postgres == nil {
+		Configured: func(cfg *config.Config, name string) bool {
+			conn, err := cfg.Connections.ResolvePostgres(name)
+			return err == nil && conn != nil
+		},
+		Connect: func(ctx context.Context, cfg *config.Config, name string) (Conn, bool, error) {
+			conn, err := cfg.Connections.ResolvePostgres(name)
+			if err != nil {
+				return nil, true, err
+			}
+			if conn == nil {
 				return nil, false, nil
 			}
-			d, err := dbpostgres.Connect(ctx, *cfg.Connections.Postgres)
+			d, err := dbpostgres.Connect(ctx, *conn)
 			if err != nil {
 				return nil, true, err
 			}
@@ -54,12 +74,19 @@ func init() {
 		},
 	})
 	Register(engine.FamilyMongo, DriverFactory{
-		Configured: func(cfg *config.Config) bool { return cfg.Connections.Mongodb != nil },
-		Connect: func(ctx context.Context, cfg *config.Config) (Conn, bool, error) {
-			if cfg.Connections.Mongodb == nil {
+		Configured: func(cfg *config.Config, name string) bool {
+			conn, err := cfg.Connections.ResolveMongodb(name)
+			return err == nil && conn != nil
+		},
+		Connect: func(ctx context.Context, cfg *config.Config, name string) (Conn, bool, error) {
+			conn, err := cfg.Connections.ResolveMongodb(name)
+			if err != nil {
+				return nil, true, err
+			}
+			if conn == nil {
 				return nil, false, nil
 			}
-			d, err := dbmongo.Connect(ctx, *cfg.Connections.Mongodb)
+			d, err := dbmongo.Connect(ctx, *conn)
 			if err != nil {
 				return nil, true, err
 			}
@@ -67,12 +94,19 @@ func init() {
 		},
 	})
 	Register(engine.FamilyRedis, DriverFactory{
-		Configured: func(cfg *config.Config) bool { return cfg.Connections.Redis != nil },
-		Connect: func(ctx context.Context, cfg *config.Config) (Conn, bool, error) {
-			if cfg.Connections.Redis == nil {
+		Configured: func(cfg *config.Config, name string) bool {
+			conn, err := cfg.Connections.ResolveRedis(name)
+			return err == nil && conn != nil
+		},
+		Connect: func(ctx context.Context, cfg *config.Config, name string) (Conn, bool, error) {
+			conn, err := cfg.Connections.ResolveRedis(name)
+			if err != nil {
+				return nil, true, err
+			}
+			if conn == nil {
 				return nil, false, nil
 			}
-			d, err := dbredis.Connect(ctx, *cfg.Connections.Redis)
+			d, err := dbredis.Connect(ctx, *conn)
 			if err != nil {
 				return nil, true, err
 			}
@@ -80,12 +114,19 @@ func init() {
 		},
 	})
 	Register(engine.FamilyES, DriverFactory{
-		Configured: func(cfg *config.Config) bool { return cfg.Connections.Elasticsearch != nil },
-		Connect: func(ctx context.Context, cfg *config.Config) (Conn, bool, error) {
-			if cfg.Connections.Elasticsearch == nil {
+		Configured: func(cfg *config.Config, name string) bool {
+			conn, err := cfg.Connections.ResolveElasticsearch(name)
+			return err == nil && conn != nil
+		},
+		Connect: func(ctx context.Context, cfg *config.Config, name string) (Conn, bool, error) {
+			conn, err := cfg.Connections.ResolveElasticsearch(name)
+			if err != nil {
+				return nil, true, err
+			}
+			if conn == nil {
 				return nil, false, nil
 			}
-			d, err := dbes.Connect(ctx, *cfg.Connections.Elasticsearch)
+			d, err := dbes.Connect(ctx, *conn)
 			if err != nil {
 				return nil, true, err
 			}
@@ -93,12 +134,19 @@ func init() {
 		},
 	})
 	Register(engine.FamilyS3, DriverFactory{
-		Configured: func(cfg *config.Config) bool { return cfg.Connections.S3 != nil },
-		Connect: func(ctx context.Context, cfg *config.Config) (Conn, bool, error) {
-			if cfg.Connections.S3 == nil {
+		Configured: func(cfg *config.Config, name string) bool {
+			conn, err := cfg.Connections.ResolveS3(name)
+			return err == nil && conn != nil
+		},
+		Connect: func(ctx context.Context, cfg *config.Config, name string) (Conn, bool, error) {
+			conn, err := cfg.Connections.ResolveS3(name)
+			if err != nil {
+				return nil, true, err
+			}
+			if conn == nil {
 				return nil, false, nil
 			}
-			d, err := dbs3.Connect(ctx, *cfg.Connections.S3)
+			d, err := dbs3.Connect(ctx, *conn)
 			if err != nil {
 				return nil, true, err
 			}

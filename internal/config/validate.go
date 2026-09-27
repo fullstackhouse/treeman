@@ -41,9 +41,18 @@ func (c *Config) Validate() error {
 	if c.Connections.S3 != nil {
 		errs = appendIfErr(errs, c.Connections.S3.validate("connections.s3"))
 	}
+	for name, m := range c.Connections.MysqlNamed {
+		errs = appendIfErr(errs, m.validate("connections.mysql."+name))
+	}
+	for name, r := range c.Connections.RedisNamed {
+		errs = appendIfErr(errs, r.validate("connections.redis."+name))
+	}
 
 	for i := range c.Databases {
 		errs = appendIfErr(errs, c.Databases[i].validate(fmt.Sprintf("databases[%d]", i)))
+	}
+	for i := range c.Databases {
+		errs = appendIfErr(errs, c.validateConnectionSelector(fmt.Sprintf("databases[%d]", i), &c.Databases[i]))
 	}
 
 	if n := len(c.MainWorktree.Databases); n > len(c.Databases) {

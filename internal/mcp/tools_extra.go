@@ -844,7 +844,9 @@ func inputsFingerprintTool(
 // engine_version field and can investigate via engine_status.
 func probeEngineVersion(ctx context.Context, cfg *config.Config, eng string) string {
 	fam, _ := engine.Canonical(eng)
-	conn, configured, err := engineconn.Connect(ctx, cfg, fam)
+	// Singular connection: the version probe is a diagnostics aid and
+	// named blocks are resolved through their own db entries.
+	conn, configured, err := engineconn.Connect(ctx, cfg, fam, "")
 	if !configured || err != nil {
 		return ""
 	}

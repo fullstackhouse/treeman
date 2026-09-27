@@ -39,20 +39,20 @@ func TestCommandsHashIgnoresRollback(t *testing.T) {
 // with dumpHash, carries the marker, and is distinct from a real
 // (commands-bearing) template key for the same dump.
 func TestDumpOnlySnapshotKey(t *testing.T) {
-	k1 := dumpOnlySnapshotKey("mysql", "8.0", "dumpA")
-	k2 := dumpOnlySnapshotKey("mysql", "8.0", "dumpA")
+	k1 := dumpOnlySnapshotKey("mysql", "", "8.0", "dumpA")
+	k2 := dumpOnlySnapshotKey("mysql", "", "8.0", "dumpA")
 	if k1.Fingerprint() != k2.Fingerprint() {
 		t.Error("dump-only key not stable for identical inputs")
 	}
 	if k1.LockfileHashes[store.DumpOnlyMarkerKey] != "1" {
 		t.Error("dump-only key missing marker")
 	}
-	if k1.Fingerprint() == dumpOnlySnapshotKey("mysql", "8.0", "dumpB").Fingerprint() {
+	if k1.Fingerprint() == dumpOnlySnapshotKey("mysql", "", "8.0", "dumpB").Fingerprint() {
 		t.Error("dump-only key must vary with dumpHash")
 	}
 	// A real template for the same dump but with a commands hash must
 	// not collide with the dump-only template.
-	realKey := snapshot.New("mysql", "8.0", "", "", "dumpA",
+	realKey := snapshot.New("mysql", "8.0", "", "", "", "dumpA",
 		map[string]string{store.CommandsHashKey: "ch"})
 	if k1.Fingerprint() == realKey.Fingerprint() {
 		t.Error("dump-only key collides with a real template key")

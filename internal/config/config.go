@@ -428,6 +428,31 @@ type ConnectionsConfig struct {
 	// file lives at its rendered `name_template` path inside the
 	// worktree.
 	Sqlite *SqliteConn `yaml:"sqlite,omitempty"`
+
+	// Named connection blocks, `connections.<family>.<name>: {...}`.
+	// Filled by UnmarshalYAML when a family key holds a mapping of
+	// mappings instead of a single connection block; a database entry
+	// selects one with `connection: <name>`. The singular fields above
+	// remain the implicit default (selector omitted, one block per
+	// family). Not schema-tagged: the generated schema describes both
+	// shapes via anyOf (see schema.injectNamedConnections).
+	//
+	//	connections:
+	//	  postgres:
+	//	    app:
+	//	      uri: postgres://app@db-main/app
+	//	    analytics:
+	//	      uri: postgres://app@db-reporting/reporting
+	//	databases:
+	//	  - { engine: postgres, name_template: "app_{slug}", connection: app }
+	//	  - { engine: postgres, name_template: "bi_{slug}", connection: analytics }
+	MysqlNamed         map[string]*MysqlConn    `yaml:"-"`
+	PostgresNamed      map[string]*PostgresConn `yaml:"-"`
+	MongodbNamed       map[string]*MongoConn    `yaml:"-"`
+	RedisNamed         map[string]*RedisConn    `yaml:"-"`
+	ElasticsearchNamed map[string]*EsConn       `yaml:"-"`
+	S3Named            map[string]*S3Conn       `yaml:"-"`
+	SqliteNamed        map[string]*SqliteConn   `yaml:"-"`
 }
 
 // SqliteConn is the (optional) connection block for the file-backed
@@ -1448,6 +1473,15 @@ type DatabaseConfig struct {
 	// The rendered schema's enum is injected from engine.Known by
 	// schema.Reflect, so the alias list lives in exactly one place.
 	Engine string `yaml:"engine"`
+
+	// Connection selects a named block from `connections.<family>`
+	// (see ConnectionsConfig's named-blocks docs). Omitted means the
+	// singular block — valid when the family declares one. Required
+	// when the family declares ONLY named blocks, and always an error
+	// when it names a block that doesn't exist. Two entries on one
+	// family with different `connection:` values prepare on different
+	// servers (monorepo services, app+reporting splits).
+	Connection string `yaml:"connection,omitempty"`
 
 	// Template for the per-worktree database/index name. Supports
 	// `{slug}`, `{slug_dash}`, `{slug_redis_queue}`, `{slug_redis_cache}`

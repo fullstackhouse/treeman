@@ -52,7 +52,7 @@ func TestTeardownSlugsConnReuse(t *testing.T) {
 
 	var dials atomic.Int64
 	dropped := &[]string{}
-	fakeConnect := func(context.Context, *config.Config, engine.Family) (engineconn.Conn, bool, error) {
+	fakeConnect := func(context.Context, *config.Config, engine.Family, string) (engineconn.Conn, bool, error) {
 		dials.Add(1)
 		return countingConn{dropped: dropped}, true, nil
 	}
@@ -107,7 +107,7 @@ func TestTeardownSlugsConnReuseFailureIsolation(t *testing.T) {
 		Connections: config.ConnectionsConfig{Mysql: &config.MysqlConn{Host: "127.0.0.1", Port: 3306}},
 	}
 	dropped := &[]string{}
-	fakeConnect := func(context.Context, *config.Config, engine.Family) (engineconn.Conn, bool, error) {
+	fakeConnect := func(context.Context, *config.Config, engine.Family, string) (engineconn.Conn, bool, error) {
 		return countingConn{dropped: dropped}, true, nil
 	}
 

@@ -144,38 +144,54 @@ func ApplyEnvCredentials(cfg *config.Config, roots ...string) {
 // a missing engine binary / unreachable daemon doesn't break config
 // loading. Drivers will surface the real connectivity error later.
 func fillFromContainerEnv(cfg *config.Config) {
-	if m := cfg.Connections.Mysql; m != nil && m.Password == "" && (m.Container != "" || m.ComposeService != "") {
-		// No ctx available here: fillFromContainerEnv is reached via the
-		// cached LoadResolved loaders which have no ctx, and threading one
-		// through every config-load call site is out of scope.
-		env, _ := containerip.EnvLookup(context.Background(), containerip.Opts{
-			Container:      m.Container,
-			ComposeService: m.ComposeService,
-			ComposeProject: m.ComposeProject,
-			Engine:         m.ContainerEngine,
-		})
-		for _, k := range []string{"MYSQL_ROOT_PASSWORD", "MARIADB_ROOT_PASSWORD", "MYSQL_PASSWORD"} {
-			if v, ok := env[k]; ok && nonEmpty(v) {
-				m.Password = v
-				break
-			}
-		}
+	fillMysqlPasswordFromContainerEnv(cfg.Connections.Mysql)
+	for _, m := range cfg.Connections.MysqlNamed {
+		fillMysqlPasswordFromContainerEnv(m)
 	}
-	if p := cfg.Connections.Postgres; p != nil && p.Password == "" && (p.Container != "" || p.ComposeService != "") {
-		env, _ := containerip.EnvLookup(context.Background(), containerip.Opts{
-			Container:      p.Container,
-			ComposeService: p.ComposeService,
-			ComposeProject: p.ComposeProject,
-			Engine:         p.ContainerEngine,
-		})
-		for _, k := range []string{"POSTGRES_PASSWORD", "POSTGRESQL_PASSWORD"} {
-			if v, ok := env[k]; ok && nonEmpty(v) {
-				p.Password = v
-				break
-			}
-		}
+	fillPostgresPasswordFromContainerEnv(cfg.Connections.Postgres)
+	for _, p := range cfg.Connections.PostgresNamed {
+		fillPostgresPasswordFromContainerEnv(p)
 	}
 	fillS3FromContainerEnv(cfg.Connections.S3)
+	for _, s := range cfg.Connections.S3Named {
+		fillS3FromContainerEnv(s)
+	}
+}
+
+func fillMysqlPasswordFromContainerEnv(m *config.MysqlConn) {
+	if m == nil || m.Password != "" || (m.Container == "" && m.ComposeService == "") {
+		return
+	}
+	env, _ := containerip.EnvLookup(context.Background(), containerip.Opts{
+		Container:      m.Container,
+		ComposeService: m.ComposeService,
+		ComposeProject: m.ComposeProject,
+		Engine:         m.ContainerEngine,
+	})
+	for _, k := range []string{"MYSQL_ROOT_PASSWORD", "MARIADB_ROOT_PASSWORD", "MYSQL_PASSWORD"} {
+		if v, ok := env[k]; ok && nonEmpty(v) {
+			m.Password = v
+			return
+		}
+	}
+}
+
+func fillPostgresPasswordFromContainerEnv(p *config.PostgresConn) {
+	if p == nil || p.Password != "" || (p.Container == "" && p.ComposeService == "") {
+		return
+	}
+	env, _ := containerip.EnvLookup(context.Background(), containerip.Opts{
+		Container:      p.Container,
+		ComposeService: p.ComposeService,
+		ComposeProject: p.ComposeProject,
+		Engine:         p.ContainerEngine,
+	})
+	for _, k := range []string{"POSTGRES_PASSWORD", "POSTGRESQL_PASSWORD"} {
+		if v, ok := env[k]; ok && nonEmpty(v) {
+			p.Password = v
+			return
+		}
+	}
 }
 
 // fillS3FromContainerEnv back-fills S3 access/secret keys from the

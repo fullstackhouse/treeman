@@ -15,15 +15,16 @@ import (
 // DriverFactory is one engine family's wiring into treeman: how to
 // check for a connection block and how to dial it into a uniform Conn.
 type DriverFactory struct {
-	// Configured reports whether cfg carries a connection block for
-	// this family — the cheap "is it wired up" check callers use to
+	// Configured reports whether cfg carries a usable connection for
+	// (family, name) — the cheap "is it wired up" check callers use to
 	// distinguish "not configured" from "configured but unreachable".
-	Configured func(cfg *config.Config) bool
-	// Connect dials the family, returning (nil, false, nil) when no
+	// An empty name selects the singular block (the historical shape).
+	Configured func(cfg *config.Config, name string) bool
+	// Connect dials (family, name), returning (nil, false, nil) when no
 	// connection block is present, (nil, true, err) when dialing a
 	// configured engine failed, and (conn, true, nil) on success. The
 	// caller owns conn.Close.
-	Connect func(ctx context.Context, cfg *config.Config) (Conn, bool, error)
+	Connect func(ctx context.Context, cfg *config.Config, name string) (Conn, bool, error)
 }
 
 var (

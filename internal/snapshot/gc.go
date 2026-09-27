@@ -165,34 +165,41 @@ func SweepBySource(ctx context.Context, cfg *config.Config, st *store.Store) {
 		})
 }
 
-// dropPool dials each engine family at most once per eviction batch.
-// `connect` is injectable so the reuse contract is assertable without
-// a live engine (#55).
+// dropPool dials each (engine family, connection) at most once per
+// eviction batch. `connect` is injectable so the reuse contract is
+// assertable without a live engine (#55). Named connections dial
+// separately from the singular block (#44).
 type dropPool struct {
 	cfg     *config.Config
-	connect func(context.Context, *config.Config, engine.Family) (engineconn.Conn, bool, error)
-	conns   map[engine.Family]engineconn.Conn
+	connect func(context.Context, *config.Config, engine.Family, string) (engineconn.Conn, bool, error)
+	conns   map[connKey]engineconn.Conn
+}
+
+type connKey struct {
+	fam  engine.Family
+	name string
 }
 
 func newDropPool(
 	cfg *config.Config,
-	connect func(context.Context, *config.Config, engine.Family) (engineconn.Conn, bool, error),
+	connect func(context.Context, *config.Config, engine.Family, string) (engineconn.Conn, bool, error),
 ) *dropPool {
-	return &dropPool{cfg: cfg, connect: connect, conns: map[engine.Family]engineconn.Conn{}}
+	return &dropPool{cfg: cfg, connect: connect, conns: map[connKey]engineconn.Conn{}}
 }
 
-func (p *dropPool) get(ctx context.Context, fam engine.Family) (engineconn.Conn, error) {
-	if c, ok := p.conns[fam]; ok {
+func (p *dropPool) get(ctx context.Context, fam engine.Family, name string) (engineconn.Conn, error) {
+	key := connKey{fam, name}
+	if c, ok := p.conns[key]; ok {
 		return c, nil
 	}
-	conn, configured, err := p.connect(ctx, p.cfg, fam)
+	conn, configured, err := p.connect(ctx, p.cfg, fam, name)
 	if !configured {
 		return nil, fmt.Errorf("connections.%s not configured", fam)
 	}
 	if err != nil {
 		return nil, err
 	}
-	p.conns[fam] = conn
+	p.conns[key] = conn
 	return conn, nil
 }
 
@@ -208,7 +215,7 @@ func (p *dropPool) drop(ctx context.Context, c store.SnapshotEvictionCandidate) 
 	if !ok {
 		return fmt.Errorf("eviction: unsupported engine %q", c.Engine)
 	}
-	conn, err := p.get(ctx, fam)
+	conn, err := p.get(ctx, fam, c.Connection)
 	if err != nil {
 		return err
 	}
@@ -323,7 +330,7 @@ func FindRowOrphans(ctx context.Context, cfg *config.Config, st *store.Store, re
 		return nil, []error{fmt.Errorf("list snapshots: %w", err)}
 	}
 	var orphans []PruneResult
-	conns := map[engine.Family]engineconn.Conn{}
+	conns := map[connKey]engineconn.Conn{}
 	defer func() {
 		for _, c := range conns {
 			_ = c.Close()
@@ -337,14 +344,15 @@ func FindRowOrphans(ctx context.Context, cfg *config.Config, st *store.Store, re
 		if !ok {
 			continue
 		}
-		conn, cached := conns[fam]
+		key := connKey{fam, c.Connection}
+		conn, cached := conns[key]
 		if !cached {
-			cn, configured, cerr := engineconn.Connect(ctx, cfg, fam)
+			cn, configured, cerr := engineconn.Connect(ctx, cfg, fam, c.Connection)
 			if !configured || cerr != nil {
 				// Unknown state — keep the rows rather than guess.
 				continue
 			}
-			conns[fam] = cn
+			conns[key] = cn
 			conn = cn
 		}
 		exists, perr := conn.Exists(ctx, c.TemplateName)

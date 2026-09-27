@@ -189,6 +189,7 @@ patches:
 # One entry per database the project owns. Each entry pairs an
 databases:
     - engine: mysql
+      connection: '...'
       name_template: '...'
       dump: '...'
       migrate:
@@ -518,39 +519,39 @@ Number of test-clone databases to pre-warm. Either the literal string `auto` (tr
 
 ConnectionsConfig — `connections:` block.
 
-#### `mysql` *([MysqlConn](#mysqlconn))*
+#### `mysql` *(one of: [MysqlConn](#mysqlconn), map of name → [MysqlConn](#mysqlconn))*
 
 MySQL / MariaDB / TiDB connection. Set when any `databases:`
 entry uses one of those engines. Treeman dials this server to
 create clones, dump templates.
 
-#### `postgres` *([PostgresConn](#postgresconn))*
+#### `postgres` *(one of: [PostgresConn](#postgresconn), map of name → [PostgresConn](#postgresconn))*
 
 PostgreSQL connection. Required when any `databases:` entry
 uses `engine: postgres` (or the `postgresql` alias).
 
-#### `mongodb` *([MongoConn](#mongoconn))*
+#### `mongodb` *(one of: [MongoConn](#mongoconn), map of name → [MongoConn](#mongoconn))*
 
 MongoDB connection. URI form (`mongodb://...`); host/port get
 rewritten at dial time when a `container` ref is set.
 
-#### `redis` *([RedisConn](#redisconn))*
+#### `redis` *(one of: [RedisConn](#redisconn), map of name → [RedisConn](#redisconn))*
 
 Redis connection. URL form (`redis://...`); ContainerRef
 semantics match MongoDB.
 
-#### `elasticsearch` *([EsConn](#esconn))*
+#### `elasticsearch` *(one of: [EsConn](#esconn), map of name → [EsConn](#esconn))*
 
 Elasticsearch / OpenSearch connection. HTTP URL form.
 
-#### `s3` *([S3Conn](#s3conn))*
+#### `s3` *(one of: [S3Conn](#s3conn), map of name → [S3Conn](#s3conn))*
 
 S3-compatible object storage connection (AWS S3, MinIO, Garage,
 Ceph RGW, Backblaze B2, Cloudflare R2, ...). Required when any
 `databases:` entry uses `engine: s3`. One connection serves many
 per-worktree buckets named via the entry's `key_prefix`.
 
-#### `sqlite` *([SqliteConn](#sqliteconn))*
+#### `sqlite` *(one of: [SqliteConn](#sqliteconn), map of name → [SqliteConn](#sqliteconn))*
 
 File-backed engines (sqlite / duckdb). Entirely optional — files
 need no server, so the family works with no connections block at
@@ -662,6 +663,16 @@ The rendered schema's enum is injected from engine.Known by
 schema.Reflect, so the alias list lives in exactly one place.
 
 _Allowed: `mysql`, `mariadb`, `tidb`, `postgres`, `postgresql`, `mongodb`, `redis`, `valkey`, `dragonfly`, `elasticsearch`, `opensearch`, `s3`, `sqlite`, `duckdb`_
+
+#### `connection` *(string)*
+
+Connection selects a named block from `connections.<family>`
+(see ConnectionsConfig's named-blocks docs). Omitted means the
+singular block — valid when the family declares one. Required
+when the family declares ONLY named blocks, and always an error
+when it names a block that doesn't exist. Two entries on one
+family with different `connection:` values prepare on different
+servers (monorepo services, app+reporting splits).
 
 #### `name_template` *(string)*
 

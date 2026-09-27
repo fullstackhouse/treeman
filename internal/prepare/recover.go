@@ -96,7 +96,7 @@ func recoverTestClone(
 	st *store.Store,
 ) error {
 	fam, _ := engine.Canonical(d.Engine)
-	conn, configured, err := engineconn.Connect(ctx, cfg, fam)
+	conn, configured, err := engineconn.Connect(ctx, cfg, fam, d.Connection)
 	if err != nil {
 		return err
 	}
@@ -148,7 +148,14 @@ func recoverBranchScoped(
 	if err != nil {
 		return err
 	}
-	eng, closeEng, cerr := connectBranchEngine(ctx, cfg, d.Engine, siblingSlugs(ctx, st, repoID, worktreeID), d.PhysicalCloneMinBytes)
+	eng, closeEng, cerr := connectBranchEngine(
+		ctx,
+		cfg,
+		d.Engine,
+		d.Connection,
+		siblingSlugs(ctx, st, repoID, worktreeID),
+		d.PhysicalCloneMinBytes,
+	)
 	if cerr != nil {
 		return cerr
 	}

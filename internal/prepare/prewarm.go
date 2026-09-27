@@ -52,7 +52,9 @@ func spareEngineFor(ctx context.Context, cfg *config.Config, engineName string) 
 	if !ok {
 		return nil, fmt.Errorf("prewarm: unsupported engine %q", engineName)
 	}
-	conn, configured, err := engineconn.Connect(ctx, cfg, fam)
+	// The spare pool is a singular-connection concept today; named
+	// postgres blocks don't participate.
+	conn, configured, err := engineconn.Connect(ctx, cfg, fam, "")
 	if !configured {
 		return nil, fmt.Errorf("prewarm: connections.%s not configured", fam)
 	}

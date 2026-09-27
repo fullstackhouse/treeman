@@ -19,10 +19,10 @@ func TestConfiguredMatchesConnect(t *testing.T) {
 	}
 	empty := &config.Config{}
 	for _, fam := range families {
-		if Configured(empty, fam) {
+		if Configured(empty, fam, "") {
 			t.Errorf("%s: Configured = true on empty config", fam)
 		}
-		conn, configured, err := Connect(context.Background(), empty, fam)
+		conn, configured, err := Connect(context.Background(), empty, fam, "")
 		if conn != nil || configured || err != nil {
 			t.Errorf("%s: Connect on empty config = (%v, %v, %v), want (nil, false, nil)", fam, conn, configured, err)
 		}
@@ -36,12 +36,12 @@ func TestConfiguredMatchesConnect(t *testing.T) {
 		Elasticsearch: &config.EsConn{URL: "http://127.0.0.1:1"},
 	}}
 	for _, fam := range families {
-		if !Configured(full, fam) {
+		if !Configured(full, fam, "") {
 			t.Errorf("%s: Configured = false with connection block present", fam)
 		}
 	}
 
-	if Configured(full, engine.Family("nope")) {
+	if Configured(full, engine.Family("nope"), "") {
 		t.Error("unknown family must not report configured")
 	}
 }

@@ -944,7 +944,7 @@ func snapshotInspectTool(
 
 	cfg, err := loadCfgForRepo(ctx, in.Repo)
 	if err == nil {
-		out.TemplateExists, out.TemplateSizeKB, out.EngineVersionNow = probeTemplate(ctx, cfg, rec.Engine, rec.TemplateName)
+		out.TemplateExists, out.TemplateSizeKB, out.EngineVersionNow = probeTemplate(ctx, cfg, rec.Engine, rec.Connection, rec.TemplateName)
 	}
 	return nil, out, nil
 }
@@ -1017,7 +1017,7 @@ func snapshotDropTool(
 		out.EngineDropErr = "load config: " + cfgErr.Error()
 		return nil, out, fmt.Errorf("load config: %w", cfgErr)
 	}
-	if dropErr := dropTemplate(ctx, cfg, rec.Engine, rec.TemplateName); dropErr != nil {
+	if dropErr := dropTemplate(ctx, cfg, rec.Engine, rec.Connection, rec.TemplateName); dropErr != nil {
 		// Don't proceed to the SQLite delete: leaving the row in
 		// place AND the orphan template means the next snapshots_inspect
 		// will surface the orphan correctly. Deleting the row here

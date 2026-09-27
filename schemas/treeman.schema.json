@@ -95,31 +95,108 @@
     "ConnectionsConfig": {
       "properties": {
         "mysql": {
-          "$ref": "#/$defs/MysqlConn",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MysqlConn"
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/MysqlConn"
+              },
+              "type": "object",
+              "description": "Named connection blocks — a `databases[].connection` selector picks one"
+            }
+          ],
           "description": "MySQL / MariaDB / TiDB connection. Set when any `databases:`\nentry uses one of those engines. Treeman dials this server to\ncreate clones, dump templates."
         },
         "postgres": {
-          "$ref": "#/$defs/PostgresConn",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PostgresConn"
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/PostgresConn"
+              },
+              "type": "object",
+              "description": "Named connection blocks — a `databases[].connection` selector picks one"
+            }
+          ],
           "description": "PostgreSQL connection. Required when any `databases:` entry\nuses `engine: postgres` (or the `postgresql` alias)."
         },
         "mongodb": {
-          "$ref": "#/$defs/MongoConn",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MongoConn"
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/MongoConn"
+              },
+              "type": "object",
+              "description": "Named connection blocks — a `databases[].connection` selector picks one"
+            }
+          ],
           "description": "MongoDB connection. URI form (`mongodb://...`); host/port get\nrewritten at dial time when a `container` ref is set."
         },
         "redis": {
-          "$ref": "#/$defs/RedisConn",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RedisConn"
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/RedisConn"
+              },
+              "type": "object",
+              "description": "Named connection blocks — a `databases[].connection` selector picks one"
+            }
+          ],
           "description": "Redis connection. URL form (`redis://...`); ContainerRef\nsemantics match MongoDB."
         },
         "elasticsearch": {
-          "$ref": "#/$defs/EsConn",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EsConn"
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/EsConn"
+              },
+              "type": "object",
+              "description": "Named connection blocks — a `databases[].connection` selector picks one"
+            }
+          ],
           "description": "Elasticsearch / OpenSearch connection. HTTP URL form."
         },
         "s3": {
-          "$ref": "#/$defs/S3Conn",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/S3Conn"
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/S3Conn"
+              },
+              "type": "object",
+              "description": "Named connection blocks — a `databases[].connection` selector picks one"
+            }
+          ],
           "description": "S3-compatible object storage connection (AWS S3, MinIO, Garage,\nCeph RGW, Backblaze B2, Cloudflare R2, ...). Required when any\n`databases:` entry uses `engine: s3`. One connection serves many\nper-worktree buckets named via the entry's `key_prefix`."
         },
         "sqlite": {
-          "$ref": "#/$defs/SqliteConn",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SqliteConn"
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/SqliteConn"
+              },
+              "type": "object",
+              "description": "Named connection blocks — a `databases[].connection` selector picks one"
+            }
+          ],
           "description": "File-backed engines (sqlite / duckdb). Entirely optional — files\nneed no server, so the family works with no connections block at\nall. `base_dir` relocates the per-worktree database files (and\ntheir cached templates) outside the worktree; by default each\nfile lives at its rendered `name_template` path inside the\nworktree."
         }
       },
@@ -222,6 +299,10 @@
             "duckdb"
           ],
           "description": "Engine discriminator. Gates which connection block is dialed\nand which sub-fields (dump, migrations, namespaces) are valid.\n`postgresql` is an alias for `postgres`; `opensearch` is an\nalias for `elasticsearch`; `valkey` and `dragonfly` are aliases\nfor `redis` (same wire protocol, same key-prefix scoping).\nThe rendered schema's enum is injected from engine.Known by\nschema.Reflect, so the alias list lives in exactly one place."
+        },
+        "connection": {
+          "type": "string",
+          "description": "Connection selects a named block from `connections.\u003cfamily\u003e`\n(see ConnectionsConfig's named-blocks docs). Omitted means the\nsingular block — valid when the family declares one. Required\nwhen the family declares ONLY named blocks, and always an error\nwhen it names a block that doesn't exist. Two entries on one\nfamily with different `connection:` values prepare on different\nservers (monorepo services, app+reporting splits)."
         },
         "name_template": {
           "type": "string",

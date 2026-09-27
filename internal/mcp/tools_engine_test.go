@@ -25,7 +25,7 @@ func TestDropTemplateRejectsNonReservedNames(t *testing.T) {
 	}
 	for _, name := range bad {
 		t.Run(name, func(t *testing.T) {
-			err := dropTemplate(context.Background(), cfg, "mysql", name)
+			err := dropTemplate(context.Background(), cfg, "mysql", "", name)
 			if err == nil || !strings.Contains(err.Error(), "treeman-reserved") {
 				t.Fatalf("name %q: want reserved-prefix rejection, got %v", name, err)
 			}
@@ -42,7 +42,7 @@ func TestDropTemplateAcceptsReservedPrefixes(t *testing.T) {
 	ok := []string{"_tm_abc", "_tmbs_abc", "tm_abc", "tmbs_abc"}
 	for _, name := range ok {
 		t.Run(name, func(t *testing.T) {
-			err := dropTemplate(context.Background(), cfg, "mysql", name)
+			err := dropTemplate(context.Background(), cfg, "mysql", "", name)
 			if err == nil {
 				t.Fatalf("nil cfg should not return nil err")
 			}
@@ -65,7 +65,7 @@ func TestDropTemplateCoversEveryKnownEngine(t *testing.T) {
 	cfg := &config.Config{}
 	for _, eng := range engine.Known {
 		t.Run(eng, func(t *testing.T) {
-			err := dropTemplate(context.Background(), cfg, eng, "_tm_x")
+			err := dropTemplate(context.Background(), cfg, eng, "", "_tm_x")
 			if err == nil {
 				t.Fatalf("nil cfg should return an error")
 			}

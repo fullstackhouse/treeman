@@ -68,10 +68,13 @@ func FindOrphans(ctx context.Context, cfg *config.Config, st templateNameSource)
 	}
 	var out []Orphan
 	for _, fam := range orphanFamilies {
-		if !engineconn.Configured(cfg, fam) {
+		// The orphan audit enumerates the SINGULAR connection per family
+		// ("" — named blocks have no enumerable namespace prefix for
+		// most engines and are audited through recorded snapshot rows).
+		if !engineconn.Configured(cfg, fam, "") {
 			continue
 		}
-		conn, _, cerr := engineconn.Connect(ctx, cfg, fam)
+		conn, _, cerr := engineconn.Connect(ctx, cfg, fam, "")
 		if cerr != nil {
 			return out, fmt.Errorf("connect %s: %w", fam, cerr)
 		}
@@ -144,10 +147,10 @@ var spareNamePattern = regexp.MustCompile(`^(_tm_(?:tmpl_[a-z]+_)?[0-9a-f]{16})_
 // snapshots probe and the `snapshots list` SPARES column — the only
 // surfaces that make the otherwise-anonymous pool observable.
 func SpareCounts(ctx context.Context, cfg *config.Config) (map[string]int, error) {
-	if !engineconn.Configured(cfg, engine.FamilyPostgres) {
+	if !engineconn.Configured(cfg, engine.FamilyPostgres, "") {
 		return map[string]int{}, nil
 	}
-	conn, _, err := engineconn.Connect(ctx, cfg, engine.FamilyPostgres)
+	conn, _, err := engineconn.Connect(ctx, cfg, engine.FamilyPostgres, "")
 	if err != nil {
 		return nil, err
 	}
@@ -171,6 +174,8 @@ func SpareCounts(ctx context.Context, cfg *config.Config) (map[string]int, error
 // past per-orphan failures and returns them joined so one wedged drop
 // doesn't strand the rest.
 func DropOrphans(ctx context.Context, cfg *config.Config, orphans []Orphan) (dropped int, errs []error) {
+	// Orphans are discovered against the singular connections only, so
+	// every drop here dials the singular block ("").
 	conns := map[engine.Family]engineconn.Conn{}
 	defer func() {
 		for _, c := range conns {
@@ -180,7 +185,7 @@ func DropOrphans(ctx context.Context, cfg *config.Config, orphans []Orphan) (dro
 	for _, o := range orphans {
 		conn, ok := conns[o.Family]
 		if !ok {
-			c, configured, cerr := engineconn.Connect(ctx, cfg, o.Family)
+			c, configured, cerr := engineconn.Connect(ctx, cfg, o.Family, "")
 			if !configured || cerr != nil {
 				errs = append(errs, fmt.Errorf("connect %s: configured=%v err=%w", o.Family, configured, cerr))
 				continue

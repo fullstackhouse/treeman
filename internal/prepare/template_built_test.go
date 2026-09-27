@@ -29,16 +29,16 @@ func TestTemplateBuiltTargets(t *testing.T) {
 	present := func(context.Context, string) (bool, error) { return true, nil }
 	clones := []string{"db_a_test_1", "db_a_test_2"}
 
-	if templateBuiltTargets(ctx, st, present, wtID, "db_a", "mysql", clones, "fp1") {
+	if templateBuiltTargets(ctx, st, present, wtID, "db_a", "mysql", "", clones, "fp1") {
 		t.Fatal("no recorded row: must restore")
 	}
-	if err := st.SetTemplateBuilt(ctx, wtID, "db_a", "mysql", "fp1"); err != nil {
+	if err := st.SetTemplateBuilt(ctx, wtID, "db_a", "mysql", "", "fp1"); err != nil {
 		t.Fatal(err)
 	}
-	if !templateBuiltTargets(ctx, st, present, wtID, "db_a", "mysql", clones, "fp1") {
+	if !templateBuiltTargets(ctx, st, present, wtID, "db_a", "mysql", "", clones, "fp1") {
 		t.Fatal("recorded fingerprint + all targets present: must skip")
 	}
-	if templateBuiltTargets(ctx, st, present, wtID, "db_a", "mysql", clones, "fp2") {
+	if templateBuiltTargets(ctx, st, present, wtID, "db_a", "mysql", "", clones, "fp2") {
 		t.Fatal("changed fingerprint: must restore")
 	}
 
@@ -47,11 +47,11 @@ func TestTemplateBuiltTargets(t *testing.T) {
 	exists := map[string]bool{}
 	probe := func(_ context.Context, name string) (bool, error) { return exists[name], nil }
 	exists = map[string]bool{"db_a": true, "db_a_test_1": true} // clone 2 gone
-	if templateBuiltTargets(ctx, st, probe, wtID, "db_a", "mysql", clones, "fp1") {
+	if templateBuiltTargets(ctx, st, probe, wtID, "db_a", "mysql", "", clones, "fp1") {
 		t.Fatal("missing clone: must restore")
 	}
 	exists = map[string]bool{"db_a": true, "db_a_test_1": true, "db_a_test_2": true}
-	if !templateBuiltTargets(ctx, st, probe, wtID, "db_a", "mysql", clones, "fp1") {
+	if !templateBuiltTargets(ctx, st, probe, wtID, "db_a", "mysql", "", clones, "fp1") {
 		t.Fatal("all targets back: must skip")
 	}
 }
@@ -75,7 +75,7 @@ func TestCacheHitGenericAlwaysReturnsCallableFinish(t *testing.T) {
 	restore := func(context.Context, string, string) error { return nil }
 	d := config.DatabaseConfig{Engine: "mysql"}
 	tplCtx := template.Context{}
-	key := snapshot.New("mysql", "8", "", "", "", nil)
+	key := snapshot.New("mysql", "8", "", "", "", "", nil)
 
 	// scenario seeds: which cache state exists before the call.
 	for _, scenario := range []string{"no-row", "skip-gate", "full-restore"} {
@@ -88,7 +88,7 @@ func TestCacheHitGenericAlwaysReturnsCallableFinish(t *testing.T) {
 			// The skip gate needs a recorded built-at fingerprint matching
 			// this key AND every target present (exists always true here).
 			if scenario == "skip-gate" {
-				if err := st.SetTemplateBuilt(ctx, wtID, "db_a", "mysql", key.Fingerprint()); err != nil {
+				if err := st.SetTemplateBuilt(ctx, wtID, "db_a", "mysql", "", key.Fingerprint()); err != nil {
 					t.Fatal(err)
 				}
 			}

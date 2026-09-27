@@ -55,8 +55,8 @@ func (f *fakeConn) DropMatching(_ context.Context, name string) (int, error) {
 func TestRecoverTestCloneRegistryDriven(t *testing.T) {
 	fake := &fakeConn{}
 	engineconn.Register(engine.FamilyMySQL, engineconn.DriverFactory{
-		Configured: func(cfg *config.Config) bool { return cfg.Connections.Mysql != nil },
-		Connect: func(context.Context, *config.Config) (engineconn.Conn, bool, error) {
+		Configured: func(cfg *config.Config, name string) bool { return cfg.Connections.Mysql != nil },
+		Connect: func(context.Context, *config.Config, string) (engineconn.Conn, bool, error) {
 			return fake, true, nil
 		},
 	})
@@ -67,8 +67,8 @@ func TestRecoverTestCloneRegistryDriven(t *testing.T) {
 		// fake (init order makes re-running the real populate
 		// impossible; tests in this package must tolerate this).
 		engineconn.Register(engine.FamilyMySQL, engineconn.DriverFactory{
-			Configured: func(*config.Config) bool { return false },
-			Connect: func(context.Context, *config.Config) (engineconn.Conn, bool, error) {
+			Configured: func(*config.Config, string) bool { return false },
+			Connect: func(context.Context, *config.Config, string) (engineconn.Conn, bool, error) {
 				return nil, false, nil
 			},
 		})

@@ -275,29 +275,31 @@ func (c s3Conn) ListMatching(ctx context.Context, p string) ([]string, error) {
 // full object walk is too expensive for an inspection probe.
 func (s3Conn) SizeKB(context.Context, string) int64 { return 0 }
 
-// Configured reports whether `fam` has a connection block in cfg —
-// i.e. whether Connect would return configured=true. Lets callers cheaply
-// skip an engine that was never wired up without opening a connection.
-// The registry's cheap check, no dialing (#47).
-func Configured(cfg *config.Config, fam engine.Family) bool {
+// Configured reports whether (fam, name) has a usable connection in
+// cfg — i.e. whether Connect would return configured=true. Lets callers
+// cheaply skip an engine that was never wired up without opening a
+// connection. The registry's cheap check, no dialing (#47). An empty
+// name selects the singular block; a non-empty name must match a named
+// block (`connections.<family>.<name>`).
+func Configured(cfg *config.Config, fam engine.Family, name string) bool {
 	f, ok := Factory(fam)
 	if !ok {
 		return false
 	}
-	return f.Configured(cfg)
+	return f.Configured(cfg, name)
 }
 
-// Connect dials the engine for `fam` via its registered DriverFactory,
-// returning a uniform Conn. `configured` is false (with a nil Conn +
-// nil error) when the engine has no connection block, letting callers
-// distinguish "not wired up" from "configured but unreachable". The
-// caller owns Close. A family with no registered factory reports the
-// same shape as an unconfigured one — alias tables (engine.Known)
-// decide which families are legal upstream of here.
-func Connect(ctx context.Context, cfg *config.Config, fam engine.Family) (conn Conn, configured bool, err error) {
+// Connect dials the engine for (fam, name) via its registered
+// DriverFactory, returning a uniform Conn. `configured` is false (with
+// a nil Conn + nil error) when the engine has no connection block,
+// letting callers distinguish "not wired up" from "configured but
+// unreachable". The caller owns Close. A family with no registered
+// factory reports the same shape as an unconfigured one — alias tables
+// (engine.Known) decide which families are legal upstream of here.
+func Connect(ctx context.Context, cfg *config.Config, fam engine.Family, name string) (conn Conn, configured bool, err error) {
 	f, ok := Factory(fam)
 	if !ok {
 		return nil, false, nil
 	}
-	return f.Connect(ctx, cfg)
+	return f.Connect(ctx, cfg, name)
 }

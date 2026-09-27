@@ -52,6 +52,7 @@ func Reflect() *jsonschema.Schema {
 	}
 	s := r.Reflect(&config.Config{})
 	injectEngineEnum(s)
+	injectNamedConnections(s)
 	return s
 }
 
@@ -79,6 +80,64 @@ func injectEngineEnum(s *jsonschema.Schema) {
 		enum[i] = k
 	}
 	engineProp.Enum = enum
+}
+
+// connFamilyDefs maps the connections.<family> YAML key to the $defs
+// name reflection assigns its connection block.
+var connFamilyDefs = map[string]string{
+	"mysql":         "MysqlConn",
+	"postgres":      "PostgresConn",
+	"mongodb":       "MongoConn",
+	"redis":         "RedisConn",
+	"elasticsearch": "EsConn",
+	"s3":            "S3Conn",
+	"sqlite":        "SqliteConn",
+}
+
+// injectNamedConnections rewrites each connections.<family> property
+// into anyOf [single block, named-blocks map] so the schema accepts
+// both YAML shapes (#44). The named form is `connections.<family>.
+// <name>: {<conn fields>}`, selected per database via
+// `databases[].connection`.
+func injectNamedConnections(s *jsonschema.Schema) {
+	if s.Properties == nil {
+		return
+	}
+	conns, ok := s.Properties.Get("connections")
+	if !ok {
+		return
+	}
+	// Reflection emits `connections: {$ref: ConnectionsConfig}` — resolve
+	// through the definition to reach the per-family properties.
+	if conns.Ref != "" {
+		defName := strings.TrimPrefix(conns.Ref, "#/$defs/")
+		if s.Definitions == nil {
+			return
+		}
+		conns, ok = s.Definitions[defName]
+		if !ok || conns.Properties == nil {
+			return
+		}
+	}
+	if conns.Properties == nil {
+		return
+	}
+	for key := range connFamilyDefs {
+		prop, ok := conns.Properties.Get(key)
+		if !ok || prop.Ref == "" {
+			continue
+		}
+		ref := prop.Ref
+		prop.Ref = ""
+		prop.AnyOf = []*jsonschema.Schema{
+			{Ref: ref},
+			{
+				Type:                 "object",
+				AdditionalProperties: &jsonschema.Schema{Ref: ref},
+				Description:          "Named connection blocks — a `databases[].connection` selector picks one",
+			},
+		}
+	}
 }
 
 // Render returns the JSON Schema for config.Config as pretty-printed
