@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/stubbedev/treeman/internal/config"
 	"github.com/stubbedev/treeman/internal/store"
@@ -50,6 +51,31 @@ func pickFreePort(t *testing.T) uint16 {
 		t.Fatal(err)
 	}
 	return uint16(n) //nolint:gosec // n parsed from a live TCP listener addr; always a valid 0-65535 port
+}
+
+// TestPortFreeForeignHeldImmediate pins the deterministic-failure
+// fast path (#43): a port held by a live listener must be reported
+// not-free on the first probe — no burning the 100 ms ProbeTimeout
+// per candidate in allocateOne's range scan.
+func TestPortFreeForeignHeldImmediate(t *testing.T) {
+	l, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = l.Close() }()
+	addr, ok := l.Addr().(*net.TCPAddr)
+	if !ok {
+		t.Fatalf("listener addr is %T, want *net.TCPAddr", l.Addr())
+	}
+	port := uint16(addr.Port) //nolint:gosec // port from a live listener addr
+
+	start := time.Now()
+	if portFree(context.Background(), port) {
+		t.Fatal("foreign-held port reported free")
+	}
+	if el := time.Since(start); el > 10*time.Millisecond {
+		t.Errorf("portFree took %v on a held port; want immediate refusal", el)
+	}
 }
 
 func TestAllocateAssignsPortsInOrder(t *testing.T) {

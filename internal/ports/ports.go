@@ -26,8 +26,10 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/stubbedev/treeman/internal/config"
@@ -180,24 +182,52 @@ func allocateOne(
 var ErrExhausted = errors.New("port range exhausted")
 
 // portFree reports whether 127.0.0.1:port is currently bindable.
-// Uses a single tcp4 listen attempt + immediate close so the probe
-// is brief (<= ProbeTimeout under a sane kernel).
+// Deterministic bind failures — the port held by another process,
+// privileged-port denial, unbindable address — return false on the
+// first attempt; only unrecognized error classes retry until
+// ProbeTimeout, so a foreign listener in the range no longer costs
+// allocateOne its full budget per candidate.
 func portFree(ctx context.Context, port uint16) bool {
 	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(int(port)))
-	deadline := time.Now().Add(ProbeTimeout)
 	var lc net.ListenConfig
+	l, err := lc.Listen(ctx, "tcp4", addr)
+	if err == nil {
+		_ = l.Close()
+		return true
+	}
+	if deterministicBindFailure(err) {
+		return false
+	}
+	// Unknown error class: retry briefly in case it's transient.
+	deadline := time.Now().Add(ProbeTimeout)
 	for {
+		time.Sleep(5 * time.Millisecond)
 		l, err := lc.Listen(ctx, "tcp4", addr)
 		if err == nil {
 			_ = l.Close()
 			return true
 		}
-		if time.Now().After(deadline) {
+		if deterministicBindFailure(err) || time.Now().After(deadline) {
 			return false
 		}
-		// Brief backoff so a transient TIME_WAIT clears.
-		time.Sleep(5 * time.Millisecond)
 	}
+}
+
+// deterministicBindFailure reports whether a listen error can't clear
+// by retrying. Go's listener sets SO_REUSEADDR, so even a TIME_WAIT
+// entry can't turn a retry into a success — a held port stays held.
+func deterministicBindFailure(err error) bool {
+	var oe *net.OpError
+	if errors.As(err, &oe) {
+		err = oe.Err
+		var se *os.SyscallError
+		if errors.As(err, &se) {
+			err = se.Err
+		}
+	}
+	return errors.Is(err, syscall.EADDRINUSE) ||
+		errors.Is(err, syscall.EACCES) ||
+		errors.Is(err, syscall.EADDRNOTAVAIL)
 }
 
 // FormatSummary returns a single-line "ports: name=port name=port"
