@@ -347,7 +347,12 @@ func RenderGlobalTemplate() string {
 // comments ride on HeadComment / LineComment fields so the output
 // stays self-documenting without ad-hoc string concatenation.
 func RenderTemplate(cwd string) string {
-	detected := framework.DefaultRegistry().DetectAll(cwd)
+	// Consult the user's custom `frameworks:` block (from the global
+	// layer — the repo config doesn't exist yet when scaffolding) so a
+	// declared framework, including its migrate/rollback commands
+	// (#74), drives the scaffold like a built-in.
+	gcfg, _ := config.LoadGlobal()
+	detected := framework.RegistryFor(&gcfg).DetectAll(cwd)
 	return renderTemplateDetected(cwd, detected)
 }
 

@@ -2039,6 +2039,26 @@ type CustomFramework struct {
 	// Spec; not used by `treeman init` (which scaffolds only from
 	// built-in frameworks).
 	EngineHint string `yaml:"engine_hint,omitempty"`
+
+	// MigrateRun is the shell command `treeman init` writes into the
+	// scaffolded `migrations.migrate.run` field (e.g. `php artisan
+	// migrate --force`). Declaring it lets an unlisted framework get a
+	// runnable migrate block instead of a hand-written one (#74).
+	MigrateRun string `yaml:"migrate_run,omitempty"`
+
+	// MigrateEnv is the env-var override map `treeman init` writes into
+	// `migrations.migrate.env`. Each value may use the `{target_db}`
+	// placeholder so the runtime substitutes the per-run template DB.
+	MigrateEnv map[string]string `yaml:"migrate_env,omitempty"`
+
+	// RollbackRun is the shell command `treeman init` writes into the
+	// optional `databases[].rollback.run` field. Treeman injects the
+	// step count via the TREEMAN_ROLLBACK_STEPS env var, so the command
+	// references it directly.
+	RollbackRun string `yaml:"rollback_run,omitempty"`
+
+	// RollbackEnv is the env-var override map for the rollback command.
+	RollbackEnv map[string]string `yaml:"rollback_env,omitempty"`
 }
 
 // LoadGlobal returns the user-global config alone (no repo or

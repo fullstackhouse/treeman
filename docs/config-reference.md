@@ -94,6 +94,12 @@ frameworks:
         lockfiles:
             - '...'
         engine_hint: '...'
+        migrate_run: '...'
+        migrate_env:
+            <name>: '...'
+        rollback_run: '...'
+        rollback_env:
+            <name>: '...'
 # Logs retention. Daemon-side prune drops rows older than
 logs:
     keep_days: 0
@@ -260,6 +266,12 @@ frameworks:
         lockfiles:
             - '...'
         engine_hint: '...'
+        migrate_run: '...'
+        migrate_env:
+            <name>: '...'
+        rollback_run: '...'
+        rollback_env:
+            <name>: '...'
 # AutoFetch policy. Daemon-side periodic `git fetch --all --prune`
 auto_fetch:
     enabled: false
@@ -562,6 +574,30 @@ Optional hint about the database engine this framework
 targets — `mysql`, `postgres`, etc. Carried on the detection
 Spec; not used by `treeman init` (which scaffolds only from
 built-in frameworks).
+
+#### `migrate_run` *(string)*
+
+MigrateRun is the shell command `treeman init` writes into the
+scaffolded `migrations.migrate.run` field (e.g. `php artisan
+migrate --force`). Declaring it lets an unlisted framework get a
+runnable migrate block instead of a hand-written one (#74).
+
+#### `migrate_env` *(object)*
+
+MigrateEnv is the env-var override map `treeman init` writes into
+`migrations.migrate.env`. Each value may use the `{target_db}`
+placeholder so the runtime substitutes the per-run template DB.
+
+#### `rollback_run` *(string)*
+
+RollbackRun is the shell command `treeman init` writes into the
+optional `databases[].rollback.run` field. Treeman injects the
+step count via the TREEMAN_ROLLBACK_STEPS env var, so the command
+references it directly.
+
+#### `rollback_env` *(object)*
+
+RollbackEnv is the env-var override map for the rollback command.
 
 ### DaemonConfig
 

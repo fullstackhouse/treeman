@@ -383,4 +383,51 @@ func TestRenderTemplateMultiEngine(t *testing.T) {
 			t.Errorf("two hint-bearing frameworks should yield two entries:\n%s", body)
 		}
 	})
+
+	// #74: a custom frameworks: entry carrying migrate/rollback
+	// commands (mapped onto the Spec by RegistryFor) must scaffold a
+	// runnable migrate: block and the optional rollback: block — not
+	// a hand-written stub.
+	t.Run("custom framework entry scaffolds its migrate + rollback commands", func(t *testing.T) {
+		dir := t.TempDir()
+		custom := framework.RegistryFor(&config.Config{
+			Frameworks: map[string]config.CustomFramework{
+				"sequel": {
+					Markers:     []string{"Rakefile"},
+					EngineHint:  "mysql",
+					MigrateRun:  "bundle exec rake db:migrate",
+					MigrateEnv:  map[string]string{"DB_NAME": "{target_db}"},
+					RollbackRun: "bundle exec rake db:rollback STEP=$TREEMAN_ROLLBACK_STEPS",
+				},
+			},
+		})
+		detected := custom.DetectAll(dir)
+		if len(detected) != 0 {
+			t.Fatalf("custom spec must not detect before its marker exists, got %d", len(detected))
+		}
+		if err := os.WriteFile(filepath.Join(dir, "Rakefile"), []byte("task :default\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		detected = custom.DetectAll(dir)
+		if len(detected) != 1 {
+			t.Fatalf("custom spec with marker present should detect, got %d", len(detected))
+		}
+		body := renderTemplateDetected(dir, detected)
+		for _, want := range []string{
+			"run: bundle exec rake db:migrate",
+			"DB_NAME: '{target_db}'",
+			"run: bundle exec rake db:rollback STEP=$TREEMAN_ROLLBACK_STEPS",
+		} {
+			if !strings.Contains(body, want) {
+				t.Errorf("scaffold missing %q:\n%s", want, body)
+			}
+		}
+		// And the result must load as a valid config.
+		if err := os.WriteFile(filepath.Join(dir, ".treeman.yaml"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := config.LoadLayered(dir); err != nil {
+			t.Errorf("scaffold should load: %v\n%s", err, body)
+		}
+	})
 }

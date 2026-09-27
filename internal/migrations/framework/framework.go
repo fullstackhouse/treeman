@@ -106,13 +106,13 @@ func (s Spec) Detect(repoRoot string) bool {
 }
 
 // Registry — the ordered list of detectors. Built-in registry below
-// covers the 14 frameworks treeman ships with. Users add custom
+// covers the 21 frameworks treeman ships with. Users add custom
 // detectors via the YAML `frameworks:` block.
 type Registry struct {
 	Specs []Spec
 }
 
-// DefaultRegistry returns the 14 built-in detectors.
+// DefaultRegistry returns the 21 built-in detectors.
 func DefaultRegistry() *Registry {
 	return &Registry{Specs: builtins()}
 }
@@ -157,6 +157,10 @@ func RegistryFor(cfg *config.Config) *Registry {
 			MigrationDirs: cf.MigrationDirs,
 			Lockfiles:     cf.Lockfiles,
 			EngineHint:    cf.EngineHint,
+			MigrateRun:    cf.MigrateRun,
+			MigrateEnv:    cf.MigrateEnv,
+			RollbackRun:   cf.RollbackRun,
+			RollbackEnv:   cf.RollbackEnv,
 		}
 		if cf.FilePattern != "" {
 			spec.FileGlobs = []string{cf.FilePattern}
