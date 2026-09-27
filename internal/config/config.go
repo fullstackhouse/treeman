@@ -512,6 +512,19 @@ type MysqlConn struct {
 	// server is provisioned for it (max_connections raised, etc.).
 	PoolMax uint32 `yaml:"pool_max,omitempty"`
 
+	// Character set for CREATE DATABASE (clones, snapshots,
+	// templates). Defaults to utf8mb4. Set this + collation together
+	// when your production/CI server uses different conventions
+	// (e.g. MySQL 8's utf8mb4_0900_ai_ci) — provisioning clones with
+	// a collation that differs from the app's real server causes
+	// subtle comparison and ordering divergences.
+	Charset string `yaml:"charset,omitempty"`
+
+	// Collation for CREATE DATABASE. Defaults to utf8mb4_unicode_ci
+	// (the pre-8.0 compatible choice). Must be valid for the chosen
+	// charset on the target server.
+	Collation string `yaml:"collation,omitempty"`
+
 	ContainerRef `yaml:",inline"`
 }
 
@@ -540,7 +553,8 @@ func (c *MysqlConn) UnmarshalYAML(node *yaml.Node) error {
 // JSONSchema for MysqlConn: scalar DSN OR full structured object.
 // sqlConnStructSchema reflects the structured-object form shared by the
 // MySQL and Postgres connection types — they carry the identical field
-// set, so the schema is generated once here.
+// set, so the schema is generated once here. MySQL extras (charset,
+// collation) are layered on by mysqlStructSchema.
 func sqlConnStructSchema() *jsonschema.Schema {
 	r := &jsonschema.Reflector{Anonymous: true, ExpandedStruct: true, FieldNameTag: "yaml"}
 	return r.Reflect(&struct {
@@ -553,14 +567,35 @@ func sqlConnStructSchema() *jsonschema.Schema {
 	}{})
 }
 
+// mysqlStructSchema is sqlConnStructSchema plus the MySQL-only
+// CREATE DATABASE knobs (charset, collation) — Postgres has no
+// equivalent, so the shared form stays untouched.
+func mysqlStructSchema() *jsonschema.Schema {
+	r := &jsonschema.Reflector{Anonymous: true, ExpandedStruct: true, FieldNameTag: "yaml"}
+	return r.Reflect(&struct {
+		Host         string       `yaml:"host,omitempty"`
+		Port         uint16       `yaml:"port,omitempty"`
+		User         string       `yaml:"user"`
+		Password     string       `yaml:"password,omitempty"`
+		PoolMax      uint32       `yaml:"pool_max,omitempty"`
+		Charset      string       `yaml:"charset,omitempty"`
+		Collation    string       `yaml:"collation,omitempty"`
+		ContainerRef ContainerRef `yaml:",inline"`
+	}{})
+}
+
 // dsnOrStructSchema wraps the shared structured form in a OneOf with the
 // bare-DSN string alternative. `dsnDesc` documents the string form;
-// `desc` is the overall connection description.
-func dsnOrStructSchema(dsnDesc, desc string) *jsonschema.Schema {
+// `desc` is the overall connection description. `structSchema` allows
+// engines with extra fields (MySQL) to swap in their own structured form.
+func dsnOrStructSchema(dsnDesc, desc string, structSchema *jsonschema.Schema) *jsonschema.Schema {
+	if structSchema == nil {
+		structSchema = sqlConnStructSchema()
+	}
 	return &jsonschema.Schema{
 		OneOf: []*jsonschema.Schema{
 			{Type: "string", Description: dsnDesc},
-			sqlConnStructSchema(),
+			structSchema,
 		},
 		Description: desc,
 	}
@@ -570,6 +605,7 @@ func (MysqlConn) JSONSchema() *jsonschema.Schema {
 	return dsnOrStructSchema(
 		"DSN: `mysql://user:pass@host:port/dbname`. Equivalent to the structured form below.",
 		"MySQL connection — bare DSN string OR structured object.",
+		mysqlStructSchema(),
 	)
 }
 
@@ -689,6 +725,7 @@ func (PostgresConn) JSONSchema() *jsonschema.Schema {
 	return dsnOrStructSchema(
 		"DSN: `postgres://user:pass@host:port/dbname?sslmode=disable`. Equivalent to the structured form below.",
 		"Postgres connection — bare DSN string OR structured object.",
+		nil,
 	)
 }
 

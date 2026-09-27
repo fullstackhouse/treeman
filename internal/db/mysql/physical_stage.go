@@ -288,7 +288,7 @@ func (d *Driver) physicalRestoreFromStage(ctx context.Context, st *templateStage
 		return err
 	}
 	if _, err := d.DB.ExecContext(ctx,
-		"CREATE DATABASE "+qtarget+" DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"); err != nil {
+		"CREATE DATABASE "+qtarget+d.createCharsetClause()); err != nil {
 		return err
 	}
 

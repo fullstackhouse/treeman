@@ -622,6 +622,12 @@
             "pool_max": {
               "type": "integer"
             },
+            "charset": {
+              "type": "string"
+            },
+            "collation": {
+              "type": "string"
+            },
             "container": {
               "type": "string"
             },

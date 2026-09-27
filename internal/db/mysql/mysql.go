@@ -165,15 +165,33 @@ func (d *Driver) MaxConnections(ctx context.Context) (int, error) {
 	return v, nil
 }
 
-// EnsureDB idempotently creates `name` with utf8mb4 / unicode_ci.
+// createCharsetClause returns the DEFAULT CHARACTER SET / COLLATE
+// suffix for CREATE DATABASE statements: the connection's configured
+// charset + collation, or the long-standing utf8mb4 /
+// utf8mb4_unicode_ci defaults when omitted — omitted fields must keep
+// provisioning byte-identical databases to existing setups.
+// charset/collation are restricted to identifier characters by config
+// validation, so concatenation here is injection-safe.
+func (d *Driver) createCharsetClause() string {
+	charset, collation := "utf8mb4", "utf8mb4_unicode_ci"
+	if d.cfg.Charset != "" {
+		charset = d.cfg.Charset
+	}
+	if d.cfg.Collation != "" {
+		collation = d.cfg.Collation
+	}
+	return " DEFAULT CHARACTER SET " + charset + " COLLATE " + collation
+}
+
+// EnsureDB idempotently creates `name` with the connection's charset
+// and collation (utf8mb4 / unicode_ci unless configured).
 func (d *Driver) EnsureDB(ctx context.Context, name string) error {
 	qname, err := ident.QuoteMySQL(name)
 	if err != nil {
 		return err
 	}
-	//nolint:gosec // qname is validated/quoted via ident.QuoteMySQL; no user values concatenated
-	stmt := "CREATE DATABASE IF NOT EXISTS " + qname +
-		" DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+	//nolint:gosec // qname is validated/quoted via ident.QuoteMySQL; charset/collation via config validation
+	stmt := "CREATE DATABASE IF NOT EXISTS " + qname + d.createCharsetClause()
 	if _, err := d.DB.ExecContext(ctx, stmt); err != nil {
 		return fmt.Errorf("CREATE DATABASE %s: %w", qname, err)
 	}
@@ -508,7 +526,7 @@ func (d *Driver) logicalSnapshotCreate(ctx context.Context, source, template str
 		return err
 	}
 	if _, err := d.DB.ExecContext(ctx,
-		"CREATE DATABASE "+qtemplate+" DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"); err != nil {
+		"CREATE DATABASE "+qtemplate+d.createCharsetClause()); err != nil {
 		return err
 	}
 

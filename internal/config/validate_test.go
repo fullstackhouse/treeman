@@ -40,6 +40,33 @@ func TestValidate(t *testing.T) {
 			want: "mutually exclusive",
 		},
 		{
+			name: "mysql charset identifier-like is valid",
+			cfg: Config{
+				Connections: ConnectionsConfig{
+					Mysql: &MysqlConn{Charset: "utf8mb4", Collation: "utf8mb4_0900_ai_ci"},
+				},
+			},
+			want: "",
+		},
+		{
+			name: "mysql charset with SQL metacharacters rejected",
+			cfg: Config{
+				Connections: ConnectionsConfig{
+					Mysql: &MysqlConn{Charset: "utf8mb4; DROP DATABASE x"},
+				},
+			},
+			want: "connections.mysql.charset",
+		},
+		{
+			name: "mysql collation with quote rejected",
+			cfg: Config{
+				Connections: ConnectionsConfig{
+					Mysql: &MysqlConn{Collation: "utf8'x"},
+				},
+			},
+			want: "connections.mysql.collation",
+		},
+		{
 			name: "database engine required",
 			cfg: Config{
 				Databases: []DatabaseConfig{{NameTemplate: "x_{slug}"}},

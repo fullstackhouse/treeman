@@ -3,9 +3,12 @@ package mysql
 import (
 	"database/sql"
 	"reflect"
+	"strings"
 	"testing"
 
 	_ "modernc.org/sqlite"
+
+	"github.com/stubbedev/treeman/internal/config"
 )
 
 // rowsFromPairs builds a real *sql.Rows yielding (table_name,
@@ -135,6 +138,38 @@ func TestPhysicalCloneMinBytes(t *testing.T) {
 		d.SetPhysicalCloneMinBytes(&configured)
 		if got := d.physicalCloneMinBytes(); got != 1<<20 {
 			t.Fatalf("got %d, want %d", got, int64(1<<20))
+		}
+	})
+}
+
+// TestCreateCharsetClause pins the charset/collation plumbing: the
+// CREATE DATABASE suffix follows the connection's configured values,
+// and omitted fields keep the long-standing utf8mb4/unicode_ci
+// defaults so existing setups provision byte-identical databases.
+func TestCreateCharsetClause(t *testing.T) {
+	t.Run("defaults when omitted", func(t *testing.T) {
+		d := &Driver{cfg: config.MysqlConn{}}
+		want := " DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+		if got := d.createCharsetClause(); got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("configured charset and collation win", func(t *testing.T) {
+		d := &Driver{cfg: config.MysqlConn{
+			Charset: "utf8mb4", Collation: "utf8mb4_0900_ai_ci",
+		}}
+		want := " DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci"
+		if got := d.createCharsetClause(); got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("collation alone overrides default collation", func(t *testing.T) {
+		d := &Driver{cfg: config.MysqlConn{Collation: "utf8mb4_bin"}}
+		got := d.createCharsetClause()
+		if !strings.Contains(got, "utf8mb4_bin") || strings.Contains(got, "unicode_ci") {
+			t.Errorf("collation not applied: %q", got)
 		}
 	})
 }

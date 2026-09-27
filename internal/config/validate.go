@@ -198,6 +198,43 @@ func appendIfErr(errs []error, err error) []error {
 	return append(errs, err)
 }
 
+// validate guards the MySQL connection knobs the driver interpolates
+// into DDL. charset/collation land verbatim in CREATE DATABASE
+// statements, so values beyond plain identifier characters are
+// rejected at load time instead of reaching the SQL layer.
+func (c *MysqlConn) validate(path string) error {
+	err := c.ContainerRef.validate(path)
+	var errs []error
+	errs = appendIfErr(errs, err)
+	for _, f := range []struct{ name, val string }{
+		{"charset", c.Charset},
+		{"collation", c.Collation},
+	} {
+		if f.val == "" {
+			continue
+		}
+		if !safeMySQLIdent(f.val) {
+			errs = append(errs, fmt.Errorf(
+				"%s.%s: %q is not a valid MySQL identifier (letters, digits, underscore)",
+				path, f.name, f.val))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// safeMySQLIdent accepts the shape every real charset/collation name
+// has (utf8mb4, utf8mb4_0900_ai_ci, binary, latin1_swedish_ci).
+func safeMySQLIdent(s string) bool {
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_':
+		default:
+			return false
+		}
+	}
+	return s != ""
+}
+
 // validate enforces that any templates carried in the overlay parse
 // the same way as their base-config counterparts. Empty templates are
 // fine — they simply inherit.

@@ -121,7 +121,7 @@ func (d *Driver) tryPhysicalSnapshotCreate(ctx context.Context, source, template
 		return false, err
 	}
 	if _, err := d.DB.ExecContext(ctx,
-		"CREATE DATABASE "+qtemplate+" DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"); err != nil {
+		"CREATE DATABASE "+qtemplate+d.createCharsetClause()); err != nil {
 		return false, err
 	}
 	// Cleanup-on-failure guard: any error path past this point leaves
