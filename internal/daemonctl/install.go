@@ -2,6 +2,7 @@ package daemonctl
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,18 +13,41 @@ import (
 // Linux, a LaunchAgent on macOS) so it auto-starts at login. Returns a
 // human-readable summary of what was installed. Shared by the CLI
 // (`treeman daemon install`) and the MCP daemon_control tool.
+//
+// A non-darwin host without systemctl gets an explicit refusal rather
+// than an exec failure: autostart is the only thing Install provides,
+// and there is nothing to write a unit into. The daemon itself still
+// works everywhere — daemonctl.Start's detached fork is the fallback.
 func Install(ctx context.Context) (string, error) {
 	if goos == "darwin" {
 		return InstallLaunchd(ctx)
+	}
+	if !systemdAvailable() {
+		return "", errors.New(
+			"no supported init system — treeman autostart needs systemd --user (systemctl not found on PATH); the daemon works without it: `treeman daemon start` runs it detached, and every command auto-starts it on demand",
+		)
 	}
 	return InstallSystemd(ctx)
 }
 
 // Uninstall removes the auto-start unit. Returns a summary. The caller
-// owns any confirmation prompt — this just does the removal.
+// owns any confirmation prompt — this just does the removal. On a
+// systemd-less host it still clears a leftover unit file (written
+// before systemd went missing, e.g. after switching distros/WSL
+// setups) but refuses when there's nothing to remove.
 func Uninstall(ctx context.Context) (string, error) {
 	if goos == "darwin" {
 		return UninstallLaunchd(ctx)
+	}
+	if !systemdAvailable() {
+		home, _ := os.UserHomeDir()
+		dst := filepath.Join(home, ".config", "systemd", "user", "treemand.service")
+		if err := os.Remove(dst); err == nil {
+			return "removed leftover treemand.service (systemd unavailable on this host)", nil
+		}
+		return "", errors.New(
+			"nothing to uninstall — treeman was not installed via systemd (systemctl not found); a running detached daemon stops with `treeman daemon stop`",
+		)
 	}
 	return UninstallSystemd(ctx)
 }

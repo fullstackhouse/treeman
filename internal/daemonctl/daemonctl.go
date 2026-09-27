@@ -24,6 +24,12 @@ const LaunchdLabel = "dev.stubbe.treemand"
 // systemd (linux) branches can both be exercised on a single host.
 var goos = runtime.GOOS
 
+// systemdAvailable reports whether systemctl is on PATH — the probe
+// Install/Uninstall use so systemd-less hosts (Alpine, Artix, WSL1,
+// containers, chroots) get an actionable message instead of a raw
+// exec error. Overridable in tests like goos.
+var systemdAvailable = func() bool { _, err := exec.LookPath("systemctl"); return err == nil }
+
 // Start brings treemand up. Tries the OS-native init first (systemd
 // --user on Linux, launchctl kickstart on macOS) so an installed
 // auto-start unit keeps managing the process; otherwise it forks

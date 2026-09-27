@@ -136,6 +136,72 @@ func TestStopLinuxStopsSystemdUnit(t *testing.T) {
 	}
 }
 
+// emptyPATH removes every lookup target so exec.LookPath finds nothing
+// — the systemd-less host simulation (Alpine, WSL1, containers).
+func emptyPATH(t *testing.T) {
+	t.Helper()
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+}
+
+// TestInstallNonDarwinWithoutSystemctlIsActionable pins the #93 guard:
+// on a non-darwin host without systemctl, Install must refuse with the
+// detached-start guidance instead of exec'ing into "executable file
+// not found".
+func TestInstallNonDarwinWithoutSystemctlIsActionable(t *testing.T) {
+	setGOOS(t, "linux")
+	emptyPATH(t)
+
+	_, err := Install(context.Background())
+	if err == nil {
+		t.Fatal("Install should refuse without systemctl")
+	}
+	for _, want := range []string{"no supported init", "treeman daemon start"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q missing %q", err, want)
+		}
+	}
+}
+
+// TestUninstallNonDarwinWithoutSystemctl pins Uninstall's two
+// systemd-less outcomes: a leftover unit file (written while systemd
+// was available) is still cleaned up; nothing-installed is an explicit
+// refusal, not a silent success.
+func TestUninstallNonDarwinWithoutSystemctl(t *testing.T) {
+	setGOOS(t, "linux")
+	emptyPATH(t)
+
+	unit := filepath.Join(t.TempDir(), "home")
+	t.Setenv("HOME", unit)
+	dst := filepath.Join(unit, ".config", "systemd", "user", "treemand.service")
+
+	t.Run("leftover unit removed", func(t *testing.T) {
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(dst, []byte("junk"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		msg, err := Uninstall(context.Background())
+		if err != nil {
+			t.Fatalf("Uninstall with leftover unit: %v", err)
+		}
+		if !strings.Contains(msg, "leftover") {
+			t.Errorf("summary %q missing \"leftover\"", msg)
+		}
+		if _, statErr := os.Stat(dst); !os.IsNotExist(statErr) {
+			t.Errorf("unit still on disk: %v", statErr)
+		}
+	})
+
+	t.Run("nothing installed refuses", func(t *testing.T) {
+		_, err := Uninstall(context.Background())
+		if err == nil || !strings.Contains(err.Error(), "nothing to uninstall") {
+			t.Fatalf("expected nothing-to-uninstall refusal, got %v", err)
+		}
+	})
+}
+
 // When the init system reports the unit is not enabled, Start must fall
 // back to forking the treemand binary off PATH and return its pid.
 func TestStartForksWhenUnitNotEnabled(t *testing.T) {
