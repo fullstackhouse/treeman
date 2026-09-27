@@ -1,6 +1,10 @@
 package notify
 
-import "github.com/stubbedev/treeman/internal/store"
+import (
+	"strings"
+
+	"github.com/stubbedev/treeman/internal/store"
+)
 
 // The four `treeman status` buckets a worktree can fall into. Kept in
 // sync with the constants in cmd/treeman/cmd/status.go — these are the
@@ -60,10 +64,18 @@ func urgencyForBucket(bucket string) Urgency {
 	return UrgencyNormal
 }
 
+// maxBodyLen caps composed bodies: notify-send and osascript both
+// truncate long text ungracefully, so the error snippet is fitted
+// into whatever room the fixed prefix + follow-up hint leave.
+const maxBodyLen = 200
+
 // Compose builds the notification banner for a status transition.
-// `repo` is the repository's display name and `target` is the worktree
-// branch or slug (either may be empty, in which case it's omitted).
-func Compose(bucket, repo, target string) Notification {
+// `repo` is the repository's display name, `target` the worktree
+// branch or slug (either may be empty, in which case it's omitted),
+// and `detail` the triggering event's message — only the failed
+// bucket surfaces it (first line, capped) and appends the follow-up
+// command for that worktree.
+func Compose(bucket, repo, target, detail string) Notification {
 	subject := repo
 	if target != "" {
 		if subject != "" {
@@ -89,10 +101,45 @@ func Compose(bucket, repo, target string) Notification {
 		body = subject + " is being torn down"
 	case BucketFailed:
 		title = "treeman: failed"
-		body = subject + " failed to prepare"
+		base := subject + " failed to prepare"
+		hint := ""
+		if target != "" {
+			hint = " — run: treeman worktree show " + target
+		}
+		body = base + hint
+		if first := firstLine(detail); first != "" {
+			// Reserve room for the hint so the follow-up command always
+			// survives the cap instead of being cut off by it.
+			budget := maxBodyLen - len([]rune(base)) - len(": ") - len([]rune(hint))
+			if budget > 0 {
+				body = base + ": " + ellipsize(first, budget) + hint
+			}
+		}
 	default:
 		title = "treeman"
 		body = subject
 	}
 	return Notification{Title: title, Body: body, Urgency: urgencyForBucket(bucket)}
+}
+
+// firstLine returns the first non-empty line of a multi-line error.
+func firstLine(s string) string {
+	for line := range strings.SplitSeq(s, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			return line
+		}
+	}
+	return ""
+}
+
+// ellipsize truncates s to at most limit runes with a trailing ellipsis.
+func ellipsize(s string, limit int) string {
+	r := []rune(s)
+	if len(r) <= limit {
+		return s
+	}
+	if limit <= 1 {
+		return "…"
+	}
+	return string(r[:limit-1]) + "…"
 }
