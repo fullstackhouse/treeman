@@ -417,14 +417,16 @@ func SyncWorktree(ctx context.Context, st *State, repoID int64, wtPath, mode str
 // first, then attempt fast-forward. Divergence is skipped, never
 // resolved.
 func advanceFF(ctx context.Context, st *State, repoID int64, wtPath, branch string) error {
-	// Dirty index / working tree → skip. `-uno` keeps untracked files
-	// out so a stray build artefact doesn't block a fast-forward.
-	out, err := gitcmd.Output(ctx, wtPath, "status", "--porcelain=v1", "-uno")
+	// Dirty index / working tree → skip. Tracked-only (-uno), so a
+	// stray untracked build artefact doesn't block a fast-forward.
+	// IsWorktreeClean runs without GIT_OPTIONAL_LOCKS so the refreshed
+	// index stat-cache persists instead of re-lstating per tick.
+	clean, err := gitenv.IsWorktreeClean(ctx, wtPath)
 	if err != nil {
 		slog.Warn("auto_fetch status failed", "wt", wtPath, "err", err)
 		return err
 	}
-	if len(strings.TrimSpace(string(out))) > 0 {
+	if !clean {
 		emitSkip(ctx, st, repoID, wtPath, branch, SyncSkipDirty, "working tree dirty")
 		return nil
 	}

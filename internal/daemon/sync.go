@@ -10,6 +10,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/stubbedev/treeman/internal/gitcmd"
+	"github.com/stubbedev/treeman/internal/gitenv"
 	"github.com/stubbedev/treeman/internal/resolve"
 	"github.com/stubbedev/treeman/internal/rpc"
 	"github.com/stubbedev/treeman/internal/store"
@@ -229,10 +230,11 @@ func worktreeSyncStatus(ctx context.Context, st *State, wtPath string) rpc.SyncW
 	}
 	// Dirty check matches the auto-fetch loop's gate so the column
 	// answers "would auto-fetch advance this on the next tick?".
-	if dirty, err := gitcmd.Output(ctx, wtPath, "status", "--porcelain=v1", "-uno"); err == nil {
-		if len(strings.TrimSpace(string(dirty))) > 0 {
-			out.Dirty = true
-		}
+	// IsWorktreeClean runs without GIT_OPTIONAL_LOCKS so the refreshed
+	// index stat-cache persists — repeated probes don't re-lstat the
+	// whole tracked tree.
+	if clean, err := gitenv.IsWorktreeClean(ctx, wtPath); err == nil {
+		out.Dirty = !clean
 	}
 	return out
 }
