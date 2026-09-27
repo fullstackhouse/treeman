@@ -15,6 +15,7 @@ import (
 	"github.com/urfave/cli/v3"
 
 	"github.com/stubbedev/treeman/internal/store"
+	"github.com/stubbedev/treeman/internal/tui"
 	"github.com/stubbedev/treeman/internal/ui"
 )
 
@@ -243,7 +244,12 @@ included, so the original terminal colors round-trip.`,
 			&cli.StringFlag{Name: "repo", Aliases: []string{"r"}, Usage: "repo root override"},
 			&cli.BoolFlag{Name: "all", Aliases: []string{"A"}, Usage: "show hook runs from every worktree (skips cwd auto-resolve)"},
 			&cli.IntFlag{Name: "show", Usage: "render captured stdout+stderr for the given hook_run id"},
+			&cli.BoolFlag{
+				Name:  "view",
+				Usage: "with --show: interactive scroll/search viewer (/ jump, n/N repeat, q quit) instead of a verbatim dump",
+			},
 			&cli.BoolFlag{Name: "json"},
+			&cli.BoolFlag{Name: "no-pager", Usage: "disable the pager even when stdout is a TTY"},
 		},
 		Action: func(ctx context.Context, c *cli.Command) error {
 			st, closer, err := openLogStore(ctx)
@@ -253,7 +259,7 @@ included, so the original terminal colors round-trip.`,
 			defer closer()
 
 			if id := int64(c.Int("show")); id > 0 {
-				return renderHookLog(ctx, st, id, c.Bool("json"))
+				return renderHookLog(ctx, st, id, c.Bool("json"), c.Bool("view"), c)
 			}
 			all := c.Bool("all")
 			wtID, name, err := resolveHooksScope(ctx, st, c, all)
@@ -275,6 +281,11 @@ included, so the original terminal colors round-trip.`,
 					ui.Info("no hook runs recorded for %s", name)
 				}
 				return nil
+			}
+			pager := newPagerIfEligible(c, false, false)
+			if pager != nil {
+				_ = pager.Start()
+				defer pager.Close()
 			}
 			renderHookRunsTable(runs, all)
 			return nil
@@ -386,7 +397,7 @@ func renderHookRunsTable(runs []store.HookRun, all bool) {
 // hook subprocess. JSON mode emits one envelope per chunk with the
 // raw body inline (already base64 by encoding/json when the chunk
 // contains non-UTF8 bytes).
-func renderHookLog(ctx context.Context, st *store.Store, id int64, asJSON bool) error {
+func renderHookLog(ctx context.Context, st *store.Store, id int64, asJSON, view bool, c *cli.Command) error {
 	chunks, err := st.QueryHookLog(ctx, id)
 	if err != nil {
 		return err
@@ -396,6 +407,29 @@ func renderHookLog(ctx context.Context, st *store.Store, id int64, asJSON bool) 
 	}
 	if asJSON {
 		return jsonStream(chunks)
+	}
+	// Interactive viewer (--view): the whole captured log in a
+	// scroll/search viewport (#65). Piped terminals degrade to the
+	// verbatim dump below.
+	if view {
+		var b strings.Builder
+		for _, chunk := range chunks {
+			b.Write(chunk.Body)
+		}
+		if verr := tui.ViewContent(fmt.Sprintf("hook_run %d", id), b.String()); verr == nil {
+			return nil
+		} else if !errors.Is(verr, tui.ErrNotTTY) {
+			return verr
+		}
+		ui.Warn("--view needs a terminal; dumping verbatim")
+	}
+	// A long build log scrolls past unpaged — same pager policy as
+	// `logs tail` (#65): $PAGER on a TTY, verbatim bytes otherwise
+	// (--json handled above, --no-pager via the command flags).
+	pager := newPagerIfEligible(c, false, asJSON)
+	if pager != nil {
+		_ = pager.Start()
+		defer pager.Close()
 	}
 	for _, c := range chunks {
 		_, _ = ui.Out.Write(c.Body)

@@ -643,7 +643,9 @@ included, so the original terminal colors round-trip.
 | `-r`, `--repo` | repo root override |
 | `-A`, `--all` | show hook runs from every worktree (skips cwd auto-resolve) |
 | `--show` | render captured stdout+stderr for the given hook_run id |
+| `--view` | with --show: interactive scroll/search viewer (/ jump, n/N repeat, q quit) instead of a verbatim dump |
 | `--json` |  |
+| `--no-pager` | disable the pager even when stdout is a TTY |
 
 ### `treeman logs purge`
 
