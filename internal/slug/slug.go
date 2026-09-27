@@ -9,6 +9,7 @@ package slug
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -123,16 +124,40 @@ func For(worktreePath string, _ string) Slug {
 	return Slug{Value: "wt_" + tag, Source: SourcePathHash}
 }
 
+// slugSuffix carries the optional TREEMAN_SLUG_SUFFIX namespace tag
+// (CI job disambiguation, #62). Read once from the env at package
+// init — the value cannot meaningfully change mid-process, and every
+// For/ForMain call site (CLI, daemon, MCP) must agree on it. Unset
+// means byte-identical slugs to a suffix-less build.
+var slugSuffix string
+
+func init() { SetSlugSuffix(os.Getenv("TREEMAN_SLUG_SUFFIX")) }
+
+// SetSlugSuffix pins the namespace suffix mixed into every slug
+// derivation. CI recipe on a shared runner or shared DB server:
+//
+//	TREEMAN_SLUG_SUFFIX=$GITHUB_RUN_ID treeman prepare --no-daemon
+//
+// so two jobs for the same branch render distinct database names
+// instead of clobbering each other's `main_<branch>` schemas. The
+// suffix is sanitised like a branch; empty clears it.
+func SetSlugSuffix(s string) { slugSuffix = sanitiseBranch(s) }
+
+// SlugSuffix returns the active namespace suffix ("" when unset).
+func SlugSuffix() string { return slugSuffix }
+
 // pathTag is a stable 8-hex-char blake3 digest of the worktree's
 // canonical absolute path — the collision-proof component of every
 // linked-worktree slug. Falls back to the raw path when Abs fails
-// (e.g. the cwd was removed) so a slug is still produced.
+// (e.g. the cwd was removed) so a slug is still produced. The
+// namespace suffix (when set) is folded into the digest so even
+// identical paths land in distinct namespaces.
 func pathTag(worktreePath string) string {
 	canonical, err := filepath.Abs(worktreePath)
 	if err != nil {
 		canonical = worktreePath
 	}
-	sum := blake3.Sum256([]byte(canonical))
+	sum := blake3.Sum256([]byte(canonical + "\x00" + slugSuffix))
 	return hexEncode(sum[:])[:8]
 }
 
@@ -162,8 +187,9 @@ func composeTicket(ticket, tag string) string {
 // the edge case at boot before the daemon has detected HEAD.
 func ForMain(worktreePath string, branch string) Slug {
 	if branch == "" {
-		sum := blake3.Sum256([]byte(worktreePath))
-		return Slug{Value: "main_detached_" + hexEncode(sum[:])[:8], Source: SourceMain}
+		sum := blake3.Sum256([]byte(worktreePath + "\x00" + slugSuffix))
+		v := "main_detached_" + hexEncode(sum[:])[:8]
+		return Slug{Value: v, Source: SourceMain}
 	}
 	sanitised := sanitiseBranch(branch)
 	if sanitised == "" {
@@ -171,7 +197,7 @@ func ForMain(worktreePath string, branch string) Slug {
 		// Falling through with an empty sanitised string would produce
 		// `main_` which collides for every odd branch in this repo;
 		// hash the raw branch instead so each one gets a stable slug.
-		sum := blake3.Sum256([]byte(branch))
+		sum := blake3.Sum256([]byte(branch + "\x00" + slugSuffix))
 		return Slug{Value: "main_sym_" + hexEncode(sum[:])[:8], Source: SourceMain}
 	}
 	v := "main_" + sanitised
@@ -181,6 +207,12 @@ func ForMain(worktreePath string, branch string) Slug {
 		sum := blake3.Sum256([]byte(v))
 		tag := hexEncode(sum[:])[:6]
 		v = v[:32-1-len(tag)] + "_" + tag
+	}
+	if slugSuffix != "" {
+		// CI namespace tag (#62): uniqueness lives in the suffix, so
+		// composeTicket-style truncation may eat the readable part but
+		// never the disambiguator.
+		v = composeTicket(v, slugSuffix)
 	}
 	return Slug{Value: v, Source: SourceMain}
 }

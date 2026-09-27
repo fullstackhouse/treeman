@@ -231,3 +231,46 @@ func TestSetRedisDBRangeRejectsBadWindows(t *testing.T) {
 		}
 	}
 }
+
+// TestSlugSuffix pins the CI namespace knob (#62): an unset suffix
+// keeps the byte-identical slugs, setting one yields distinct slugs
+// for the same branch AND the same path, the suffix survives the
+// 32-char budget truncation, and sanitisation keeps the result a
+// valid identifier.
+func TestSlugSuffix(t *testing.T) {
+	if SlugSuffix() != "" {
+		t.Fatalf("suffix should default to empty in tests, got %q", SlugSuffix())
+	}
+	base := ForMain("/repo", "feature/x").Value
+	baseFor := For("/repo", "").Value
+
+	SetSlugSuffix("run-12345")
+	t.Cleanup(func() { SetSlugSuffix("") })
+
+	if SlugSuffix() != "run_12345" {
+		t.Errorf("suffix not sanitised: %q", SlugSuffix())
+	}
+	withSuffix := ForMain("/repo", "feature/x").Value
+	if withSuffix == base {
+		t.Errorf("suffix did not disambiguate the main-branch slug: %q", withSuffix)
+	}
+	if want := "main_feature_x_run_12345"; withSuffix != want {
+		t.Errorf("suffix slug = %q, want %q", withSuffix, want)
+	}
+	if For("/repo", "").Value == baseFor {
+		t.Errorf("suffix did not disambiguate the path-hash slug")
+	}
+
+	// The suffix must survive even for a long branch: composeTicket
+	// may eat the readable part, never the disambiguator.
+	long := ForMain("/repo", "feature/very-long-branch-name-that-overflows-the-budget")
+	if len(long.Value) > 32 || !strings.Contains(long.Value, "run_12345") {
+		t.Errorf("long-branch slug lost the suffix or overflows budget: %q", long.Value)
+	}
+
+	// Clearing restores byte-identical behaviour.
+	SetSlugSuffix("")
+	if ForMain("/repo", "feature/x").Value != base || For("/repo", "").Value != baseFor {
+		t.Errorf("clearing the suffix must restore the original slugs")
+	}
+}

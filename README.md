@@ -244,7 +244,11 @@ process and block until complete, without a user session or daemon. Bare
 forcing inline preparation. Do not use daemon-backed worktree lifecycle
 commands as a substitute. A writable per-build directory isolates SQLite
 (including WAL/SHM sidecars) and scratch files; do not point concurrent builds
-at one `TREEMAN_DB_PATH`.
+at one `TREEMAN_DB_PATH`. When two jobs can run the same branch on one
+machine (or share a DB server), set `TREEMAN_SLUG_SUFFIX` to a
+job-unique value (`$GITHUB_RUN_ID`, job id, …) so the `main_<branch>`
+slug namespace — and with it every rendered database name — stays
+disjoint per job.
 
 ```sh
 composer install --no-interaction
@@ -260,6 +264,7 @@ snapshots:
   cap_per_repo: 8
 YAML
 export TREEMAN_CONFIG="$TREEMAN_BUILD_STATE/config.yaml"
+export TREEMAN_SLUG_SUFFIX="${GITHUB_RUN_ID:-$(date +%s)}"
 vendor/bin/treeman prepare --no-daemon --repo "$PWD" --worktree "$PWD"
 vendor/bin/phpunit
 ```
