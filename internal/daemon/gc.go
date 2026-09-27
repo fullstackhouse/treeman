@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/stubbedev/treeman/internal/resolve"
 	"github.com/stubbedev/treeman/internal/snapshot"
 )
@@ -53,19 +55,28 @@ func runGCSweep(ctx context.Context, st *State) {
 	}
 	// Per-repo cap eviction first — keeps the cache shape sane
 	// regardless of size / age. Errors are logged and continued so
-	// one bad repo doesn't block GC for the rest.
+	// one bad repo doesn't block GC for the rest. Lookups stay
+	// read-only (a GC tick must not be the thing that creates repo
+	// rows) and repos evict in parallel — each repo drives its own
+	// engines, and the drops inside are conn-cached + bounded (#55).
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(4)
 	for _, p := range paths {
+		repoID, err := st.Store.LookupRepoID(ctx, p)
+		if err != nil || repoID == 0 {
+			continue
+		}
 		cfg, err := resolve.LoadResolved(p)
 		if err != nil {
 			slog.Warn("snapshot_gc load cfg", "repo", p, "err", err)
 			continue
 		}
-		repoID, err := st.Store.EnsureRepo(ctx, p, filepathBase(p))
-		if err != nil {
-			continue
-		}
-		snapshot.EvictExcess(ctx, &cfg, st.Store, repoID)
+		g.Go(func() error {
+			snapshot.EvictExcess(gctx, &cfg, st.Store, repoID)
+			return nil
+		})
 	}
+	_ = g.Wait()
 	// Global age + size sweeps — driven by the global config so the
 	// limits are user-wide, not per-repo.
 	globalCfg, err := resolve.LoadResolved("")
@@ -76,16 +87,4 @@ func runGCSweep(ctx context.Context, st *State) {
 	snapshot.SweepByAge(ctx, &globalCfg, st.Store)
 	snapshot.SweepBySize(ctx, &globalCfg, st.Store)
 	snapshot.SweepBySource(ctx, &globalCfg, st.Store)
-}
-
-// filepathBase mirrors filepath.Base but lives here to keep this
-// file dependency-light (the package already imports filepath via
-// other files).
-func filepathBase(p string) string {
-	for i := len(p) - 1; i >= 0; i-- {
-		if p[i] == '/' {
-			return p[i+1:]
-		}
-	}
-	return p
 }

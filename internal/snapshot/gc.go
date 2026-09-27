@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/stubbedev/treeman/internal/config"
 	"github.com/stubbedev/treeman/internal/db/engineconn"
 	"github.com/stubbedev/treeman/internal/engine"
@@ -54,17 +56,39 @@ func EvictExcess(ctx context.Context, cfg *config.Config, st *store.Store, repoI
 //
 // The size sweep (running-total accounting) and PurgeRepo (no pin check,
 // error-collecting) keep their own loops.
+// evictCandidates drops each candidate's engine-side template, then
+// deletes its row + writes the event. Candidates are processed as a
+// batch: one connection per engine family (re-dialing per candidate
+// made N-template sweeps pay N x (dial + auth + ping + container
+// resolve), #55), with the drops themselves running under a bounded
+// errgroup — the store writes stay serial so the SQLite side is never
+// contended. Pinned fingerprints are skipped.
 func evictCandidates(
 	ctx context.Context, cfg *config.Config, st *store.Store,
 	cands []store.SnapshotEvictionCandidate, repoID int64,
 	eventType, logPrefix string, msg func(store.SnapshotEvictionCandidate) string,
 ) {
-	for _, c := range cands {
+	pool := newDropPool(cfg, engineconn.Connect)
+	defer pool.close()
+
+	results := make([]error, len(cands))
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(4)
+	for i, c := range cands {
 		if IsPinned(c.Fingerprint) {
 			continue
 		}
-		if err := dropTemplate(ctx, cfg, c); err != nil {
-			slog.Warn(logPrefix+" drop", "template", c.TemplateName, "engine", c.Engine, "err", err)
+		g.Go(func() error {
+			if err := pool.drop(gctx, c); err != nil {
+				slog.Warn(logPrefix+" drop", "template", c.TemplateName, "engine", c.Engine, "err", err)
+				results[i] = err
+			}
+			return nil
+		})
+	}
+	_ = g.Wait()
+	for i, c := range cands {
+		if results[i] != nil || IsPinned(c.Fingerprint) {
 			continue
 		}
 		if err := st.DeleteSnapshot(ctx, c.Fingerprint); err != nil {
@@ -94,8 +118,10 @@ func PurgeRepo(ctx context.Context, cfg *config.Config, st *store.Store, repoID 
 	if err != nil {
 		return 0, []error{err}
 	}
+	pool := newDropPool(cfg, engineconn.Connect)
+	defer pool.close()
 	for _, c := range cands {
-		if err := dropTemplate(ctx, cfg, c); err != nil {
+		if err := pool.drop(ctx, c); err != nil {
 			errs = append(errs, fmt.Errorf("drop %s (%s): %w", c.TemplateName, c.Engine, err))
 			continue
 		}
@@ -139,19 +165,53 @@ func SweepBySource(ctx context.Context, cfg *config.Config, st *store.Store) {
 		})
 }
 
-func dropTemplate(ctx context.Context, cfg *config.Config, c store.SnapshotEvictionCandidate) error {
+// dropPool dials each engine family at most once per eviction batch.
+// `connect` is injectable so the reuse contract is assertable without
+// a live engine (#55).
+type dropPool struct {
+	cfg     *config.Config
+	connect func(context.Context, *config.Config, engine.Family) (engineconn.Conn, bool, error)
+	conns   map[engine.Family]engineconn.Conn
+}
+
+func newDropPool(
+	cfg *config.Config,
+	connect func(context.Context, *config.Config, engine.Family) (engineconn.Conn, bool, error),
+) *dropPool {
+	return &dropPool{cfg: cfg, connect: connect, conns: map[engine.Family]engineconn.Conn{}}
+}
+
+func (p *dropPool) get(ctx context.Context, fam engine.Family) (engineconn.Conn, error) {
+	if c, ok := p.conns[fam]; ok {
+		return c, nil
+	}
+	conn, configured, err := p.connect(ctx, p.cfg, fam)
+	if !configured {
+		return nil, fmt.Errorf("connections.%s not configured", fam)
+	}
+	if err != nil {
+		return nil, err
+	}
+	p.conns[fam] = conn
+	return conn, nil
+}
+
+func (p *dropPool) close() {
+	for _, c := range p.conns {
+		_ = c.Close()
+	}
+}
+
+// drop removes the candidate's template + its pre-warmed spare family.
+func (p *dropPool) drop(ctx context.Context, c store.SnapshotEvictionCandidate) error {
 	fam, ok := engine.Canonical(c.Engine)
 	if !ok {
 		return fmt.Errorf("eviction: unsupported engine %q", c.Engine)
 	}
-	conn, configured, err := engineconn.Connect(ctx, cfg, fam)
-	if !configured {
-		return fmt.Errorf("connections.%s not configured", fam)
-	}
+	conn, err := p.get(ctx, fam)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = conn.Close() }()
 	if err := conn.DropSnapshot(ctx, c.TemplateName); err != nil {
 		return err
 	}
@@ -163,6 +223,13 @@ func dropTemplate(ctx context.Context, cfg *config.Config, c store.SnapshotEvict
 		return fmt.Errorf("drop spare family %s%s*: %w", c.TemplateName, PrewarmSuffix, err)
 	}
 	return nil
+}
+
+// dropTemplate is the single-candidate path: one batch of one.
+func dropTemplate(ctx context.Context, cfg *config.Config, c store.SnapshotEvictionCandidate) error {
+	pool := newDropPool(cfg, engineconn.Connect)
+	defer pool.close()
+	return pool.drop(ctx, c)
 }
 
 // SweepByAge drops every cached template whose `last_used_at` is
