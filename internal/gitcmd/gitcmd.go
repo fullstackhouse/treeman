@@ -338,8 +338,7 @@ func withSelfOnPath(env []string) []string {
 
 func wrap(args []string, err error, stderr string) error {
 	code := 0
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
+	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 		code = exitErr.ExitCode()
 	}
 	return &Error{

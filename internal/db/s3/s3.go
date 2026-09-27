@@ -751,16 +751,13 @@ func copySource(bucket, key string) string {
 }
 
 func isNotFound(err error) bool {
-	var nsk *s3types.NoSuchBucket
-	if errors.As(err, &nsk) {
+	if _, ok := errors.AsType[*s3types.NoSuchBucket](err); ok {
 		return true
 	}
-	var nf *s3types.NotFound
-	if errors.As(err, &nf) {
+	if _, ok := errors.AsType[*s3types.NotFound](err); ok {
 		return true
 	}
-	var ae smithy.APIError
-	if errors.As(err, &ae) {
+	if ae, ok := errors.AsType[smithy.APIError](err); ok {
 		switch ae.ErrorCode() {
 		case "NoSuchBucket", "NoSuchKey", "NotFound":
 			return true
@@ -789,16 +786,13 @@ func isNotImplemented(err error) bool {
 }
 
 func isAlreadyOwned(err error) bool {
-	var owned *s3types.BucketAlreadyOwnedByYou
-	if errors.As(err, &owned) {
+	if _, ok := errors.AsType[*s3types.BucketAlreadyOwnedByYou](err); ok {
 		return true
 	}
-	var exists *s3types.BucketAlreadyExists
-	if errors.As(err, &exists) {
+	if _, ok := errors.AsType[*s3types.BucketAlreadyExists](err); ok {
 		return true
 	}
-	var ae smithy.APIError
-	if errors.As(err, &ae) {
+	if ae, ok := errors.AsType[smithy.APIError](err); ok {
 		switch ae.ErrorCode() {
 		case "BucketAlreadyOwnedByYou", "BucketAlreadyExists":
 			return true

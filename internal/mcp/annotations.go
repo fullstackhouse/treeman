@@ -10,11 +10,6 @@ import (
 // We provide them centrally so every tool registration stays one
 // line and the hints stay consistent.
 
-// boolPtr is needed because ToolAnnotations uses *bool for
-// DestructiveHint and OpenWorldHint — the SDK distinguishes
-// unset (nil → default) from explicitly-false.
-func boolPtr(b bool) *bool { return &b }
-
 // readOnlyAnno marks a tool as side-effect-free, with a human title.
 // openWorld=true means the tool reaches outside treeman's own state
 // (engines, git, the filesystem); false means it touches only
@@ -23,7 +18,7 @@ func readOnlyAnno(title string, openWorld bool) *mcpsdk.ToolAnnotations {
 	return &mcpsdk.ToolAnnotations{
 		Title:         title,
 		ReadOnlyHint:  true,
-		OpenWorldHint: boolPtr(openWorld),
+		OpenWorldHint: new(openWorld),
 	}
 }
 
@@ -36,8 +31,8 @@ func readOnlyAnno(title string, openWorld bool) *mcpsdk.ToolAnnotations {
 func writeAnno(title string, destructive, idempotent, openWorld bool) *mcpsdk.ToolAnnotations {
 	return &mcpsdk.ToolAnnotations{
 		Title:           title,
-		DestructiveHint: boolPtr(destructive),
+		DestructiveHint: new(destructive),
 		IdempotentHint:  idempotent,
-		OpenWorldHint:   boolPtr(openWorld),
+		OpenWorldHint:   new(openWorld),
 	}
 }

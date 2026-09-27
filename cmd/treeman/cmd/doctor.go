@@ -328,8 +328,7 @@ func checkSnapshots(ctx context.Context, repoRoot string) doctorResult {
 
 func checkDaemon(ctx context.Context) doctorResult {
 	resp, err := rpc.Call(ctx, rpc.Request{Method: rpc.MethodStatus})
-	var pme *rpc.ProtocolMismatchError
-	if errors.As(err, &pme) {
+	if pme, ok := errors.AsType[*rpc.ProtocolMismatchError](err); ok {
 		return doctorResult{
 			Name:   "daemon",
 			Status: "warn",

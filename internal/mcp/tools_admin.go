@@ -18,10 +18,10 @@ import (
 	"github.com/stubbedev/treeman/internal/notify"
 	"github.com/stubbedev/treeman/internal/prepare"
 	"github.com/stubbedev/treeman/internal/resolve"
-	"github.com/stubbedev/treeman/pkg/rpc"
 	"github.com/stubbedev/treeman/internal/slug"
 	"github.com/stubbedev/treeman/internal/store"
 	"github.com/stubbedev/treeman/internal/yamlpatch"
+	"github.com/stubbedev/treeman/pkg/rpc"
 )
 
 // registerAdminGapTools binds the lifecycle/admin tools that close the

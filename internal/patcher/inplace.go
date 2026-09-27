@@ -85,10 +85,9 @@ func jsonLiteralFor(v string) string {
 func setTOMLInPlace(content string, pairs map[string]string) (string, bool, error) {
 	out := content
 	for _, k := range sortedKeys(pairs) {
-		dot := strings.LastIndexByte(k, '.')
-		table, key := "", k
-		if dot >= 0 {
-			table, key = k[:dot], k[dot+1:]
+		table, key, found := strings.CutLast(k, ".")
+		if !found {
+			table, key = "", k
 		}
 		sec, start, end := tomlSection(out, table)
 		if sec == "" {

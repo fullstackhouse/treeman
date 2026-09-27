@@ -122,8 +122,7 @@ func (d *Driver) resolveStageTarget(ctx context.Context, template string) (
 
 	tables, terr := listInnoDBTables(ctx, d.DB, template)
 	if terr != nil {
-		var sk *physicalSkippedError
-		if errors.As(terr, &sk) {
+		if sk, ok := errors.AsType[*physicalSkippedError](terr); ok {
 			return "", "", "", "", nil, sk, nil
 		}
 		return "", "", "", "", nil, nil, terr

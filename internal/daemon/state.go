@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/stubbedev/treeman/internal/config"
-	"github.com/stubbedev/treeman/pkg/safego"
 	"github.com/stubbedev/treeman/internal/store"
+	"github.com/stubbedev/treeman/pkg/safego"
 )
 
 // State holds everything the RPC dispatch needs: the SQLite store,

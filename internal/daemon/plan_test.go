@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stubbedev/treeman/pkg/rpc"
 	"github.com/stubbedev/treeman/internal/store"
+	"github.com/stubbedev/treeman/pkg/rpc"
 )
 
 // register installs a synthetic task runner for the duration of a test.

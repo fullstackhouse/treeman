@@ -217,11 +217,9 @@ func portFree(ctx context.Context, port uint16) bool {
 // by retrying. Go's listener sets SO_REUSEADDR, so even a TIME_WAIT
 // entry can't turn a retry into a success — a held port stays held.
 func deterministicBindFailure(err error) bool {
-	var oe *net.OpError
-	if errors.As(err, &oe) {
+	if oe, ok := errors.AsType[*net.OpError](err); ok {
 		err = oe.Err
-		var se *os.SyscallError
-		if errors.As(err, &se) {
+		if se, ok := errors.AsType[*os.SyscallError](err); ok {
 			err = se.Err
 		}
 	}

@@ -157,8 +157,9 @@ func TestWireRestoreFailingIndexNamespacesCollection(t *testing.T) {
 	// Two specs, same name "dup", different keys — createIndexes
 	// refuses the pair outright.
 	doc(bson.M{
-		"db": "srcdb", "collection": "users",
-		"metadata": `{"indexes":[{"v":2,"key":{"_id":1},"name":"_id_"},{"v":2,"key":{"a":1},"name":"dup"},{"v":2,"key":{"b":1},"name":"dup"}],"type":"collection"}`,
+		"db":         "srcdb",
+		"collection": "users",
+		"metadata":   `{"indexes":[{"v":2,"key":{"_id":1},"name":"_id_"},{"v":2,"key":{"a":1},"name":"dup"},{"v":2,"key":{"b":1},"name":"dup"}],"type":"collection"}`,
 	})
 	w32(0xFFFFFFFF)
 	doc(bson.M{"db": "srcdb", "collection": "users"})

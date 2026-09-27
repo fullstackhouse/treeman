@@ -12,9 +12,9 @@ import (
 	"github.com/stubbedev/treeman/internal/gitcmd"
 	"github.com/stubbedev/treeman/internal/gitenv"
 	"github.com/stubbedev/treeman/internal/resolve"
-	"github.com/stubbedev/treeman/pkg/rpc"
 	"github.com/stubbedev/treeman/internal/store"
 	"github.com/stubbedev/treeman/internal/wtreg"
+	"github.com/stubbedev/treeman/pkg/rpc"
 )
 
 // SyncNow drives an on-demand fetch + advance for the targeted scope:

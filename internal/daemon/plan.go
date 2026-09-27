@@ -20,7 +20,6 @@ import (
 	"github.com/stubbedev/treeman/internal/hooks"
 	"github.com/stubbedev/treeman/internal/prepare"
 	"github.com/stubbedev/treeman/internal/resolve"
-	"github.com/stubbedev/treeman/pkg/rpc"
 	"github.com/stubbedev/treeman/internal/runid"
 	"github.com/stubbedev/treeman/internal/slug"
 	"github.com/stubbedev/treeman/internal/snapshot"
@@ -28,6 +27,7 @@ import (
 	"github.com/stubbedev/treeman/internal/wt"
 	"github.com/stubbedev/treeman/internal/wtreg"
 	"github.com/stubbedev/treeman/internal/yamlpatch"
+	"github.com/stubbedev/treeman/pkg/rpc"
 )
 
 // handleRunPlan executes a submitted plan. The daemon is the sole

@@ -219,8 +219,7 @@ func copyIndexes(ctx context.Context, src, dst *mongo.Collection) error {
 // isIndexConflict reports whether `err` is the "index already
 // exists with the same name and options" CommandError code 85.
 func isIndexConflict(err error) bool {
-	var ce mongo.CommandError
-	if errors.As(err, &ce) {
+	if ce, ok := errors.AsType[mongo.CommandError](err); ok {
 		return ce.Code == 85 || ce.Code == 86 // IndexOptionsConflict / IndexKeySpecsConflict
 	}
 	return false

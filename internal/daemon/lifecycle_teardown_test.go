@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stubbedev/treeman/pkg/rpc"
 	"github.com/stubbedev/treeman/internal/store"
+	"github.com/stubbedev/treeman/pkg/rpc"
 )
 
 func blockedOrphanDropHandler(entered, release chan struct{}, drops *atomic.Int32) http.HandlerFunc {

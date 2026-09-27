@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/stubbedev/treeman/pkg/rpc"
 	"github.com/stubbedev/treeman/internal/store"
+	"github.com/stubbedev/treeman/pkg/rpc"
 )
 
 func setup(t *testing.T) (*State, func()) {

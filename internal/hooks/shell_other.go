@@ -16,5 +16,7 @@ import (
 func shellCommand(cmdStr string) (*exec.Cmd, error) {
 	return nil, fmt.Errorf(
 		"hook %q cannot run: treeman hooks are unsupported on %s (they require /bin/sh and setsid); supported platforms are linux, macOS, and the BSDs",
-		cmdStr, runtime.GOOS)
+		cmdStr,
+		runtime.GOOS,
+	)
 }

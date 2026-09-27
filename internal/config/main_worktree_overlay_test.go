@@ -5,8 +5,6 @@ import (
 	"testing"
 )
 
-func uint32Ptr(v uint32) *uint32 { return &v }
-
 func TestApplyMainWorktreeOverlayEmptyIsNoOp(t *testing.T) {
 	cfg := &Config{
 		Databases: []DatabaseConfig{{
@@ -89,7 +87,7 @@ func TestApplyMainWorktreeOverlayFanoutZeroIsExplicit(t *testing.T) {
 			Fanout:       16,
 		}},
 		MainWorktree: MainWorktreeConfig{
-			Databases: []DatabaseOverlay{{Fanout: uint32Ptr(0)}},
+			Databases: []DatabaseOverlay{{Fanout: new(uint32(0))}},
 		},
 	}
 	ApplyMainWorktreeOverlay(cfg)

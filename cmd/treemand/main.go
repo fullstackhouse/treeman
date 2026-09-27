@@ -18,10 +18,10 @@ import (
 
 	"github.com/stubbedev/treeman/internal/config"
 	"github.com/stubbedev/treeman/internal/daemon"
-	"github.com/stubbedev/treeman/pkg/rpc"
-	"github.com/stubbedev/treeman/pkg/safego"
 	"github.com/stubbedev/treeman/internal/store"
 	"github.com/stubbedev/treeman/internal/version"
+	"github.com/stubbedev/treeman/pkg/rpc"
+	"github.com/stubbedev/treeman/pkg/safego"
 )
 
 // Goroutine labels for the daemon's process-lifetime loops + RPC

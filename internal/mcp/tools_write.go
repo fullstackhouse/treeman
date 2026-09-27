@@ -21,7 +21,6 @@ import (
 	"github.com/stubbedev/treeman/internal/ports"
 	"github.com/stubbedev/treeman/internal/prepare"
 	"github.com/stubbedev/treeman/internal/resolve"
-	"github.com/stubbedev/treeman/pkg/rpc"
 	"github.com/stubbedev/treeman/internal/schema"
 	"github.com/stubbedev/treeman/internal/slug"
 	"github.com/stubbedev/treeman/internal/snapshot"
@@ -30,6 +29,7 @@ import (
 	"github.com/stubbedev/treeman/internal/wt"
 	"github.com/stubbedev/treeman/internal/wtreg"
 	"github.com/stubbedev/treeman/internal/yamlpatch"
+	"github.com/stubbedev/treeman/pkg/rpc"
 )
 
 // registerWriteTools binds every tool that mutates state, including

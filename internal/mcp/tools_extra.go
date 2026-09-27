@@ -22,10 +22,10 @@ import (
 	"github.com/stubbedev/treeman/internal/gitcmd"
 	"github.com/stubbedev/treeman/internal/prepare"
 	"github.com/stubbedev/treeman/internal/resolve"
-	"github.com/stubbedev/treeman/pkg/rpc"
 	"github.com/stubbedev/treeman/internal/slug"
 	"github.com/stubbedev/treeman/internal/store"
 	"github.com/stubbedev/treeman/internal/template"
+	"github.com/stubbedev/treeman/pkg/rpc"
 )
 
 // ─── logs_wait ──────────────────────────────────────────────────────

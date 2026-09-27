@@ -23,8 +23,8 @@ import (
 
 	"github.com/stubbedev/treeman/internal/config"
 	"github.com/stubbedev/treeman/internal/db/containerip"
-	"github.com/stubbedev/treeman/pkg/safego"
 	"github.com/stubbedev/treeman/internal/shellenv"
+	"github.com/stubbedev/treeman/pkg/safego"
 )
 
 // RunOutcome bundles every group's status.
@@ -115,8 +115,7 @@ func RunHooksOrphan(
 	if wait {
 		for idx, c := range cmds {
 			if err := c.Wait(); err != nil {
-				var exitErr *exec.ExitError
-				if errors.As(err, &exitErr) {
+				if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 					out.Groups[idx].ExitCode = exitErr.ExitCode()
 				} else {
 					out.Groups[idx].ExitCode = -1
@@ -186,8 +185,7 @@ func RunHooks(
 				// exit code on the outcome and let the caller
 				// decide. The same group's stdout/stderr are
 				// already in its log file.
-				var exitErr *exec.ExitError
-				if errors.As(err, &exitErr) {
+				if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 					out.Groups[idx].ExitCode = exitErr.ExitCode()
 				} else {
 					out.Groups[idx].ExitCode = -1
@@ -392,8 +390,7 @@ func spawnDetached(
 			if err == nil {
 				return
 			}
-			var exitErr *exec.ExitError
-			if errors.As(err, &exitErr) {
+			if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 				slog.Warn("background hook non-zero exit",
 					"cmd", cmdStr, "exit_code", exitErr.ExitCode())
 				return

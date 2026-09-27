@@ -318,8 +318,7 @@ func (d *Driver) SnapshotCreate(ctx context.Context, source, template string) er
 		d.setLastStrategy(CloneStrategyPhysical)
 		return d.cloneTriggers(ctx, source, template)
 	} else if perr != nil {
-		var skip *physicalSkippedError
-		if errors.As(perr, &skip) {
+		if skip, ok := errors.AsType[*physicalSkippedError](perr); ok {
 			slog.Debug("mysql physical clone preconditions not met; using logical fallback",
 				"source", source, "template", template, "reason", skip.reason)
 		} else {

@@ -482,7 +482,11 @@ func TestWtDeleteBatchConfirm(t *testing.T) {
 		}
 	}
 	if strings.Count(combined, "--yes") != 1 {
-		t.Errorf("batch refusal should hint --yes exactly once (one batch question, not one per target):\nstdout:\n%s\nstderr:\n%s", res.stdout, res.stderr)
+		t.Errorf(
+			"batch refusal should hint --yes exactly once (one batch question, not one per target):\nstdout:\n%s\nstderr:\n%s",
+			res.stdout,
+			res.stderr,
+		)
 	}
 	list := e.run(t, repo, "worktree", "list", "--json")
 	if !strings.Contains(list.stdout, `"alpha-branch"`) || !strings.Contains(list.stdout, `"beta-branch"`) {

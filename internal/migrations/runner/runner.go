@@ -203,8 +203,7 @@ func Run(
 		StderrTail: stderr.String(),
 		LogPath:    spec.LogPath,
 	}
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
+	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 		out.ExitCode = exitErr.ExitCode()
 		return out, nil
 	}

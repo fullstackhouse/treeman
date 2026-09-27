@@ -296,12 +296,9 @@ func iniSection(content, section string) (string, int, int) {
 // (`a.b.k`).
 func restoreTOMLFromHead(content, headContent string, dottedKeys []string) string {
 	for _, dk := range dottedKeys {
-		dot := strings.LastIndexByte(dk, '.')
-		var table, key string
-		if dot < 0 {
+		table, key, found := strings.CutLast(dk, ".")
+		if !found {
 			table, key = "", dk
-		} else {
-			table, key = dk[:dot], dk[dot+1:]
 		}
 		headSec, _, _ := tomlSection(headContent, table)
 		curSec, curStart, curEnd := tomlSection(content, table)

@@ -1089,8 +1089,8 @@ func (PortSpec) JSONSchema() *jsonschema.Schema {
 	rangeSchema := &jsonschema.Schema{
 		Type:        "array",
 		Items:       &jsonschema.Schema{Type: "integer", Minimum: json.Number("1"), Maximum: json.Number("65535")},
-		MinItems:    intp(2),
-		MaxItems:    intp(2),
+		MinItems:    new(uint64(2)),
+		MaxItems:    new(uint64(2)),
 		Description: "Inclusive [min, max] TCP port range.",
 	}
 	props := orderedmap.New[string, *jsonschema.Schema]()
@@ -1109,11 +1109,6 @@ func (PortSpec) JSONSchema() *jsonschema.Schema {
 		Description: "Per-worktree port slot: an inclusive [min, max] range. Shorthand `[min, max]` is accepted; the long form is `{range: [min, max]}`.",
 	}
 }
-
-// intp is a small helper for jsonschema.Schema's *uint64 minimum /
-// maximum fields. (json.Number can be used for unbounded ints; intp
-// is used for MinItems / MaxItems which take *uint64.)
-func intp(v uint64) *uint64 { return &v }
 
 // WorktreesConfig — `worktrees:` block.
 type WorktreesConfig struct {
@@ -2441,8 +2436,7 @@ func GlobalConfigPath() (string, bool) { return globalConfigPath() }
 func FieldScopes() map[string]string {
 	t := reflect.TypeFor[Config]()
 	out := make(map[string]string, t.NumField())
-	for i := range t.NumField() {
-		f := t.Field(i)
+	for f := range t.Fields() {
 		name, _, _ := strings.Cut(f.Tag.Get("yaml"), ",")
 		if name == "" || name == "-" {
 			continue

@@ -15,13 +15,13 @@ import (
 
 	"github.com/stubbedev/treeman/internal/config"
 	"github.com/stubbedev/treeman/internal/resolve"
-	"github.com/stubbedev/treeman/pkg/rpc"
 	"github.com/stubbedev/treeman/internal/runid"
 	"github.com/stubbedev/treeman/internal/store"
 	"github.com/stubbedev/treeman/internal/template"
 	"github.com/stubbedev/treeman/internal/version"
 	"github.com/stubbedev/treeman/internal/watcher"
 	"github.com/stubbedev/treeman/internal/wt"
+	"github.com/stubbedev/treeman/pkg/rpc"
 )
 
 // Dispatch executes one RPC request against the live state, returning
