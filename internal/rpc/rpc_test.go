@@ -1,9 +1,42 @@
 package rpc
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"net"
+	"path/filepath"
 	"testing"
 )
+
+// serveOnce answers exactly one request with the given response over
+// a throwaway unix socket wired to $TREEMAN_SOCKET.
+func serveOnce(t *testing.T, resp Response) {
+	t.Helper()
+	sock := filepath.Join(t.TempDir(), "treeman.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		conn, aerr := ln.Accept()
+		if aerr != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		var req Request
+		if derr := json.NewDecoder(conn).Decode(&req); derr != nil {
+			return
+		}
+		e := json.NewEncoder(conn)
+		if eerr := e.Encode(&resp); eerr != nil {
+			_ = conn.Close()
+		}
+	}()
+	t.Setenv(SocketEnv, sock)
+}
 
 func TestRequestRoundtripStatus(t *testing.T) {
 	req := Request{Method: MethodStatus}
@@ -110,5 +143,38 @@ func TestUnknownMethodDecodes(t *testing.T) {
 	}
 	if got.RunPlan != nil || got.RepoRegister != nil {
 		t.Errorf("no args pointer should be set for an unknown method")
+	}
+}
+
+// TestCallFlagsProtocolMismatch pins the stale-daemon gate: a response
+// stamped with a foreign protocol version fails the call with the
+// restart hint instead of surfacing later as a decode or
+// unknown-method error, and the matching version passes through.
+func TestCallFlagsProtocolMismatch(t *testing.T) {
+	serveOnce(t, Response{Kind: KindOk, ProtocolVersion: ProtocolVersion - 1, DaemonVersion: "2.5.1"})
+	_, err := Call(context.Background(), Request{Method: MethodStatus})
+	var pme *ProtocolMismatchError
+	if !errors.As(err, &pme) {
+		t.Fatalf("expected *ProtocolMismatchError, got %v", err)
+	}
+	if pme.DaemonProtocol != ProtocolVersion-1 || pme.DaemonVersion != "2.5.1" {
+		t.Errorf("mismatch fields = %+v", pme)
+	}
+	want := fmt.Sprintf("treemand v2.5.1 speaks protocol v%d but treeman expects v%d — run `treeman daemon restart`",
+		ProtocolVersion-1, ProtocolVersion)
+	if err.Error() != want {
+		t.Errorf("mismatch text = %q, want %q", err.Error(), want)
+	}
+
+	serveOnce(t, Response{Kind: KindOk, ProtocolVersion: ProtocolVersion, DaemonVersion: "2.5.93"})
+	if _, err := Call(context.Background(), Request{Method: MethodStatus}); err != nil {
+		t.Errorf("matching protocol should pass: %v", err)
+	}
+
+	// An unstamped response (pre-stamping daemon, bare Pong) is not
+	// flagged here — EnsureDaemon's MethodStatus probe owns that case.
+	serveOnce(t, Response{Kind: KindPong})
+	if _, err := Call(context.Background(), Request{Method: MethodPing}); err != nil {
+		t.Errorf("unstamped response should pass: %v", err)
 	}
 }

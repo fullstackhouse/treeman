@@ -26,6 +26,38 @@ import (
 // the daemon's writer. Only the former is safe to retry locally.
 var ErrDaemonUnreachable = errors.New("daemon unreachable")
 
+// ProtocolMismatchError reports a daemon whose wire protocol predates
+// (or postdates) this CLI. Method/args the CLI sends may not exist on
+// the old daemon, so every stamped call fails up front — the fix is
+// always the same: restart the daemon so it runs the matching binary.
+// Callers match with errors.As to suppress autostart fallbacks
+// (restarting behind the user's back hides the problem).
+type ProtocolMismatchError struct {
+	DaemonVersion  string
+	DaemonProtocol uint32
+}
+
+func (e *ProtocolMismatchError) Error() string {
+	ident := ""
+	if e.DaemonVersion != "" {
+		ident = " v" + e.DaemonVersion
+	}
+	return fmt.Sprintf(
+		"treemand%s speaks protocol v%d but treeman expects v%d — run `treeman daemon restart`",
+		ident, e.DaemonProtocol, ProtocolVersion)
+}
+
+// checkProtocol gates a decoded response on its protocol stamp. Zero
+// means the daemon didn't stamp this response (a pre-stamping binary,
+// or a bare Pong) — the MethodStatus probe in EnsureDaemon still
+// catches those, since status always carried the fields.
+func checkProtocol(resp Response) error {
+	if pv := resp.ProtocolVersion; pv != 0 && pv != ProtocolVersion {
+		return &ProtocolMismatchError{DaemonVersion: resp.DaemonVersion, DaemonProtocol: pv}
+	}
+	return nil
+}
+
 // ProtocolVersion is bumped when an incompatible RPC change ships.
 // v2: nested-args envelope ({"method":m,"<m>":{...}}) replacing the old
 // flat tagged union; worktree finalize/teardown folded into run_plan.
@@ -518,6 +550,9 @@ func Call(ctx context.Context, req Request) (Response, error) {
 	var resp Response
 	if err := dec.Decode(&resp); err != nil {
 		return Response{}, fmt.Errorf("decode: %w", err)
+	}
+	if err := checkProtocol(resp); err != nil {
+		return resp, err
 	}
 	return resp, nil
 }

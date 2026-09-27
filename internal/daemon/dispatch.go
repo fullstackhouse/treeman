@@ -25,11 +25,15 @@ import (
 )
 
 // Dispatch executes one RPC request against the live state, returning
-// the response to send back over the socket.
+// the response to send back over the socket. Every response is stamped
+// with the daemon's protocol + version (stampIdentity) so the CLI can
+// flag a stale daemon instead of failing on a decode/unknown-method
+// error it can't act on.
 //
 // The shutdown channel is closed when a `Shutdown` request fires,
 // signalling the main loop to bail.
-func Dispatch(ctx context.Context, st *State, shutdown chan<- struct{}, req rpc.Request) rpc.Response {
+func Dispatch(ctx context.Context, st *State, shutdown chan<- struct{}, req rpc.Request) (resp rpc.Response) {
+	defer func() { stampIdentity(&resp) }()
 	switch req.Method {
 	case rpc.MethodPing:
 		return rpc.Response{Kind: rpc.KindPong}
@@ -87,6 +91,16 @@ func Dispatch(ctx context.Context, st *State, shutdown chan<- struct{}, req rpc.
 	default:
 		return errResp("unknown method: " + req.Method)
 	}
+}
+
+// stampIdentity fills the compatibility fields the CLI's protocol
+// gate checks on every response. Applied after Dispatch so even an
+// unknown-method error response announces the daemon's protocol —
+// that's the exact situation where the user needs the restart hint
+// instead of a bare error.
+func stampIdentity(resp *rpc.Response) {
+	resp.ProtocolVersion = rpc.ProtocolVersion
+	resp.DaemonVersion = version.Version
 }
 
 // handleRepoRegister ensures the repo row exists and returns its ID.

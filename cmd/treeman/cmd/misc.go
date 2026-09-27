@@ -1020,6 +1020,8 @@ func daemonStop(ctx context.Context, c *cli.Command) error {
 
 func daemonStatus(ctx context.Context, c *cli.Command) error {
 	resp, err := rpc.Call(ctx, rpc.Request{Method: rpc.MethodStatus})
+	var pme *rpc.ProtocolMismatchError
+	mismatch := errors.As(err, &pme)
 	if c.Bool("json") {
 		out := map[string]any{}
 		if err != nil {
@@ -1031,16 +1033,21 @@ func daemonStatus(ctx context.Context, c *cli.Command) error {
 			out["pid"] = resp.Pid
 			out["watchers"] = resp.WatcherCount
 		}
+		if mismatch {
+			out["status"] = "protocol-mismatch"
+		}
 		return jsonStream(out)
 	}
 	if err != nil {
+		if mismatch {
+			ui.Warn("treemand protocol mismatch")
+			ui.Hint("%s", pme.Error())
+			return nil
+		}
 		ui.Warn("daemon not running")
 		ui.Hint("start it with: treeman daemon start")
 		ui.Hint("or auto-launch on login: treeman daemon install")
-		return nil //nolint:nilerr // "not running" is a normal status result, not a CLI error
-	}
-	if resp.Kind == rpc.KindError {
-		return fmt.Errorf("daemon: %s", resp.Message)
+		return nil
 	}
 	ui.Success("treemand %s — pid=%d watchers=%d", ui.Bold(resp.DaemonVersion), resp.Pid, resp.WatcherCount)
 	return nil
