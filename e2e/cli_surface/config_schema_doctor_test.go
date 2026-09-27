@@ -203,7 +203,11 @@ worker_slots: 4
 	t.Run("global key rejected without --global", func(t *testing.T) {
 		res := e.run(t, repo, "config", "unset", "daemon.log_level")
 		if res.err == nil || !strings.Contains(res.stdout+res.stderr, "global config") {
-			t.Errorf("repo-layer unset of a global key should fail with the layer message:\nstdout:\n%s\nstderr:\n%s", res.stdout, res.stderr)
+			t.Errorf(
+				"repo-layer unset of a global key should fail with the layer message:\nstdout:\n%s\nstderr:\n%s",
+				res.stdout,
+				res.stderr,
+			)
 		}
 	})
 }
