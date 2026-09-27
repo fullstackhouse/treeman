@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -90,6 +91,11 @@ TREEMAN_NO_PAGER=1 to disable.`,
 			reverseEvents(rows)
 			follow := c.Bool("follow")
 			asJSON := c.Bool("json")
+			style := eventStyle{
+				asJSON:  asJSON,
+				verbose: c.Bool("verbose") || os.Getenv("TREEMAN_LOGS_VERBOSE") == "1",
+				fullTS:  c.Bool("full-ts"),
+			}
 			printScopePreamble(scope, asJSON)
 			pager := newPagerIfEligible(c, follow, asJSON)
 			if pager != nil {
@@ -98,7 +104,7 @@ TREEMAN_NO_PAGER=1 to disable.`,
 			}
 			lastID := int64(0)
 			for _, e := range rows {
-				printEvent(asJSON, e)
+				printEventStyled(style, e)
 				if e.ID > lastID {
 					lastID = e.ID
 				}
@@ -106,7 +112,7 @@ TREEMAN_NO_PAGER=1 to disable.`,
 			if !follow {
 				return nil
 			}
-			return followLoop(ctx, st, f, lastID, asJSON)
+			return followLoop(ctx, st, f, lastID, style)
 		},
 	}
 }
@@ -610,13 +616,34 @@ func reverseEvents(in []store.Event) {
 // object suitable for `jq` consumption; the human mode produces a
 // colored, padded line with worktree context when available.
 func printEvent(asJSON bool, e store.Event) {
-	if asJSON {
+	printEventStyled(eventStyle{asJSON: asJSON}, e)
+}
+
+// eventStyle carries the human-mode presentation knobs for printEvent.
+// JSON output ignores all of them (byte-identical to the unstyled
+// printer).
+type eventStyle struct {
+	asJSON  bool
+	verbose bool // append sorted dim key=value pairs from the payload
+	fullTS  bool // always the full date+time, even for today's events
+}
+
+// payloadNoiseKeys are structured bookkeeping that adds nothing when
+// inlined into a human line (the run is already the line's context).
+var payloadNoiseKeys = map[string]bool{"run_id": true}
+
+// printEventStyled renders one row: colored, padded human line or a
+// flat JSON object. With verbose on, the payload's structured facts
+// are appended as sorted dim key=value pairs (#81); by default today's
+// events print time-of-day only (--full-ts restores the full stamp).
+func printEventStyled(style eventStyle, e store.Event) {
+	if style.asJSON {
 		_ = jsonStream([]store.Event{e})
 		return
 	}
 	level := ui.Level(e.Level)
 	et := ui.EventType(e.EventType)
-	ts := ui.Dim(formatTs(e.Ts))
+	ts := ui.Dim(formatTsStyled(style.fullTS, e.Ts))
 	wt := ""
 	if e.WorktreeSlug != "" {
 		wt = " " + ui.Magenta("["+e.WorktreeSlug+"]")
@@ -629,17 +656,46 @@ func printEvent(asJSON bool, e store.Event) {
 	if e.DurationMs.Valid && e.DurationMs.Int64 > 0 {
 		dur = " " + ui.Dim(fmt.Sprintf("(%dms)", e.DurationMs.Int64))
 	}
+	payload := ""
+	if style.verbose {
+		payload = " " + ui.Dim(sortedPayloadPairs(e.PayloadJSON))
+	}
 	// Fit the message to the terminal: the prefix (ts, level, 24-rune
 	// event-type pad, worktree, phase) and the duration suffix are
 	// reserved first, and an overlong message gets an ellipsis instead
 	// of wrapping the rest of the line. JSON output (handled above)
 	// stays full-length.
 	msg := e.Message
-	if !asJSON {
-		budget := max(ui.TermWidth()-ui.Width(ts)-1-ui.Width(level)-1-24-ui.Width(wt)-ui.Width(phase)-1-ui.Width(dur), 10)
+	if !style.asJSON {
+		budget := max(ui.TermWidth()-ui.Width(ts)-1-ui.Width(level)-1-24-ui.Width(wt)-ui.Width(phase)-1-ui.Width(dur)-ui.Width(payload), 10)
 		msg = ui.Truncate(msg, budget)
 	}
-	_, _ = fmt.Fprintf(ui.Out, "%s %s %s%s%s %s%s\n", ts, padRight(level, 5), padRight(et, 24), wt, phase, msg, dur)
+	_, _ = fmt.Fprintf(ui.Out, "%s %s %s%s%s %s%s%s\n", ts, padRight(level, 5), padRight(et, 24), wt, phase, msg, dur, payload)
+}
+
+// sortedPayloadPairs renders the event payload as `k=v` pairs, keys
+// sorted for stable output, noise keys dropped. A malformed payload
+// degrades to empty — the message column already carries the story.
+func sortedPayloadPairs(payloadJSON string) string {
+	if payloadJSON == "" || payloadJSON == "{}" {
+		return ""
+	}
+	var kv map[string]any
+	if err := json.Unmarshal([]byte(payloadJSON), &kv); err != nil {
+		return ""
+	}
+	keys := make([]string, 0, len(kv))
+	for k := range kv {
+		if !payloadNoiseKeys[k] {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%v", k, kv[k]))
+	}
+	return strings.Join(parts, " ")
 }
 
 // jsonStream marshals each row as one JSON line.
@@ -673,7 +729,7 @@ func jsonStream(v any) error {
 // followLoop polls SQLite for events newer than lastID at a 250ms
 // cadence. SQLite WAL means a separate writer (the daemon) doesn't
 // block our reads.
-func followLoop(ctx context.Context, st *store.Store, baseFilter store.EventFilter, lastID int64, asJSON bool) error {
+func followLoop(ctx context.Context, st *store.Store, baseFilter store.EventFilter, lastID int64, style eventStyle) error {
 	baseFilter.OldestFirst = true
 	baseFilter.Limit = 0
 	baseFilter.AfterID = lastID
@@ -689,7 +745,7 @@ func followLoop(ctx context.Context, st *store.Store, baseFilter store.EventFilt
 				return err
 			}
 			for _, e := range rows {
-				printEvent(asJSON, e)
+				printEventStyled(style, e)
 				if e.ID > baseFilter.AfterID {
 					baseFilter.AfterID = e.ID
 				}

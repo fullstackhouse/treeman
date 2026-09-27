@@ -513,6 +513,22 @@ func formatTs(ms int64) string {
 		t.Y, t.M, t.D, t.H, t.Min, t.S, msPart)
 }
 
+// formatTsStyled renders an event timestamp for human log lines:
+// today's events print bare time-of-day (15:04:05) — the date is
+// noise when tailing the current session — while older events keep
+// the full stamp. fullTS always restores the wide format (#81).
+func formatTsStyled(fullTS bool, ms int64) string {
+	if fullTS {
+		return formatTs(ms)
+	}
+	t := timeFromUnix(ms / 1000)
+	now := timeFromUnix(time.Now().Unix())
+	if t.Y == now.Y && t.M == now.M && t.D == now.D {
+		return fmt.Sprintf("%02d:%02d:%02d", t.H, t.Min, t.S)
+	}
+	return formatTs(ms)
+}
+
 type tparts struct{ Y, M, D, H, Min, S int }
 
 func timeFromUnix(sec int64) tparts {
