@@ -71,6 +71,12 @@ type Opts struct {
 	// mapping for this port over the bridge IP — required on
 	// macOS / Windows Docker Desktop.
 	InternalPort uint16
+
+	// RemoteHost overrides the daemon-endpoint host detection for the
+	// published-port branch (#86): non-nil means ResolveAddr uses it
+	// instead of reading $DOCKER_HOST / `docker context inspect`.
+	// Tests inject a stub here; production leaves it nil.
+	RemoteHost func(ctx context.Context, engine string) string
 }
 
 // Addr is a resolved (host, port) pair. Port == 0 means the caller
@@ -162,6 +168,23 @@ func ResolveAddr(ctx context.Context, opts Opts) (*Addr, error) {
 	return addr, nil
 }
 
+// daemonHost returns the host to dial when following a published
+// port mapping: the loopback default, or the remote daemon's host
+// when the engine endpoint is non-local (#86). The injected
+// RemoteHost stub wins when set.
+func (o Opts) daemonHost(ctx context.Context) string {
+	if o.RemoteHost != nil {
+		if h := o.RemoteHost(ctx, o.normEngine()); h != "" {
+			return h
+		}
+		return "127.0.0.1"
+	}
+	if h := remoteEndpointHost(ctx, o.normEngine()); h != "" {
+		return h
+	}
+	return "127.0.0.1"
+}
+
 func resolveUncached(ctx context.Context, opts Opts) (*Addr, error) {
 	engine := opts.normEngine()
 	if InsideContainer() && !engineSocketReachable(ctx, engine) {
@@ -180,10 +203,12 @@ func resolveUncached(ctx context.Context, opts Opts) (*Addr, error) {
 	// Prefer a published-port mapping when the caller asked about
 	// a specific internal port. Cross-platform: bridge IPs are
 	// not routable from macOS/Windows host, but localhost:HOST_PORT
-	// always is.
+	// always is. With a REMOTE daemon endpoint (DOCKER_HOST tcp/ssh,
+	// #86) the port is published on that machine, so its host
+	// substitutes for loopback; unix-socket endpoints keep 127.0.0.1.
 	if opts.InternalPort != 0 {
 		if hp, ok := info.publishedHostPort(opts.InternalPort); ok {
-			return &Addr{Host: "127.0.0.1", Port: hp}, nil
+			return &Addr{Host: opts.daemonHost(ctx), Port: hp}, nil
 		}
 	}
 	// Fall back to the bridge-network IP.

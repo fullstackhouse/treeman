@@ -4,6 +4,7 @@ package containerip
 
 import (
 	"context"
+	"net"
 	"os"
 	"os/exec"
 	"strings"
@@ -76,4 +77,63 @@ func engineSocketReachable(ctx context.Context, engine string) bool {
 	}()
 	engineOnce.Store(engine, ok)
 	return ok
+}
+
+var endpointOnce sync.Map // map[engine]string
+
+// remoteEndpointHost returns the non-local host of the engine daemon
+// endpoint, or "" when treeman talks to a local daemon (unix socket,
+// Windows named pipe, loopback tcp) — the same distinction #86 draws
+// for published ports: on a remote DOCKER_HOST the port is published
+// THERE, not on treeman's machine.
+//
+// Resolution: $DOCKER_HOST, else the current docker context's
+// endpoint via `<engine> context inspect`. Result is cached per
+// engine — the context doesn't change mid-process.
+func remoteEndpointHost(ctx context.Context, engine string) string {
+	if v, ok := endpointOnce.Load(engine); ok {
+		host, _ := v.(string)
+		return host
+	}
+	ep := os.Getenv("DOCKER_HOST")
+	if ep == "" {
+		if out, err := exec.CommandContext(ctx, engine, "context", "inspect", "--format", "{{.DockerEndpoint}}").Output(); err == nil {
+			ep = strings.TrimSpace(string(out))
+		}
+	}
+	host := hostFromEndpoint(ep)
+	endpointOnce.Store(engine, host)
+	return host
+}
+
+// hostFromEndpoint extracts the remote host from a docker endpoint
+// string, or "" for local endpoints. Handles tcp/ssh/http(s) schemes
+// (with optional userinfo), unix/npipe as local, and garbage as
+// local — an unparseable endpoint must not redirect traffic.
+func hostFromEndpoint(ep string) string {
+	ep = strings.TrimSpace(ep)
+	if ep == "" || strings.HasPrefix(ep, "unix://") || strings.HasPrefix(ep, "npipe://") {
+		return ""
+	}
+	scheme, rest, ok := strings.Cut(ep, "://")
+	if !ok {
+		return ""
+	}
+	switch scheme {
+	case "tcp", "ssh", "http", "https":
+	default:
+		return ""
+	}
+	// Drop userinfo (ssh://user@host, tcp://user:pass@host:port).
+	if _, tail, found := strings.Cut(rest, "@"); found {
+		rest = tail
+	}
+	host, _, err := net.SplitHostPort(rest)
+	if err != nil {
+		host = rest
+	}
+	if host == "" || host == "127.0.0.1" || host == "localhost" || host == "::1" {
+		return ""
+	}
+	return host
 }
