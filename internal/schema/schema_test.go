@@ -144,8 +144,8 @@ func TestReflectScopedRepoDropsGlobalOnlyKeys(t *testing.T) {
 
 func TestReflectScopedFullEqualsReflect(t *testing.T) {
 	full := scopedKeys(t, ScopeFull)
-	if len(full) != 16 {
-		t.Errorf("full scope = %d top-level keys, want 16", len(full))
+	if len(full) != 17 {
+		t.Errorf("full scope = %d top-level keys, want 17", len(full))
 	}
 }
 

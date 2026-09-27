@@ -22,6 +22,7 @@ Later layers override earlier ones. Each top-level key has a **scope** that dete
 
 | Key | Scope |
 |-----|-------|
+| `include` | both |
 | `daemon` | global |
 | `connections` | both |
 | `snapshots` | global |
@@ -46,6 +47,9 @@ Complete examples covering every key valid in each layer, generated from the sch
 ### User-global `~/.config/treeman/config.yaml`
 
 ```yaml
+# Other config files to merge BEFORE this file's own keys
+include:
+    - '...'
 # Daemon process settings: stderr log level. Typically lives in
 daemon:
     log_level: '...'
@@ -141,6 +145,9 @@ notifications:
 ### Per-repo `.treeman.yaml`
 
 ```yaml
+# Other config files to merge BEFORE this file's own keys
+include:
+    - '...'
 # Connection blocks per supported engine (MySQL, Postgres,
 connections:
     mysql: '...'
@@ -294,6 +301,13 @@ ports:
 ```
 
 ## Top-level keys
+
+### `include` *(array of string)* _[both]_
+
+Other config files to merge BEFORE this file's own keys
+(depth-first, cycle-checked). Paths are relative to the
+including file. Lets a fleet of repos share one
+`databases:`/`connections:` fragment (#78).
 
 ### `daemon` *([DaemonConfig](#daemonconfig))* _[global]_
 

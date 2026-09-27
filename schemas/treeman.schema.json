@@ -153,6 +153,28 @@
         "engine_hint": {
           "type": "string",
           "description": "Optional hint about the database engine this framework\ntargets — `mysql`, `postgres`, etc. Carried on the detection\nSpec; not used by `treeman init` (which scaffolds only from\nbuilt-in frameworks)."
+        },
+        "migrate_run": {
+          "type": "string",
+          "description": "MigrateRun is the shell command `treeman init` writes into the\nscaffolded `migrations.migrate.run` field (e.g. `php artisan\nmigrate --force`). Declaring it lets an unlisted framework get a\nrunnable migrate block instead of a hand-written one (#74)."
+        },
+        "migrate_env": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object",
+          "description": "MigrateEnv is the env-var override map `treeman init` writes into\n`migrations.migrate.env`. Each value may use the `{target_db}`\nplaceholder so the runtime substitutes the per-run template DB."
+        },
+        "rollback_run": {
+          "type": "string",
+          "description": "RollbackRun is the shell command `treeman init` writes into the\noptional `databases[].rollback.run` field. Treeman injects the\nstep count via the TREEMAN_ROLLBACK_STEPS env var, so the command\nreferences it directly."
+        },
+        "rollback_env": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object",
+          "description": "RollbackEnv is the env-var override map for the rollback command."
         }
       },
       "additionalProperties": false,
@@ -1046,6 +1068,13 @@
     }
   },
   "properties": {
+    "include": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array",
+      "description": "Other config files to merge BEFORE this file's own keys\n(depth-first, cycle-checked). Paths are relative to the\nincluding file. Lets a fleet of repos share one\n`databases:`/`connections:` fragment (#78)."
+    },
     "connections": {
       "$ref": "#/$defs/ConnectionsConfig",
       "description": "Connection blocks per supported engine (MySQL, Postgres,\nMongoDB, Redis, Elasticsearch). Treeman dials these to create\nper-worktree clone databases, run migrations."

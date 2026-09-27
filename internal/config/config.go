@@ -27,6 +27,12 @@ import (
 // Config is the top-level structure of a `.treeman.yaml` plus the
 // global `~/.config/treeman/config.yaml`.
 type Config struct {
+	// Other config files to merge BEFORE this file's own keys
+	// (depth-first, cycle-checked). Paths are relative to the
+	// including file. Lets a fleet of repos share one
+	// `databases:`/`connections:` fragment (#78).
+	Include []string `yaml:"include,omitempty" scope:"both"`
+
 	// Daemon process settings: stderr log level. Typically lives in
 	// the user-global config.
 	Daemon DaemonConfig `yaml:"daemon,omitempty" scope:"global"`
@@ -2264,7 +2270,7 @@ func fragmentPaths(mainRoot, wtRoot string) []string {
 // surface doesn't churn each time.
 func normaliseAliases(cfg *Config) {}
 
-func mergeYAMLFile(cfg *Config, path string) error {
+func mergeYAMLFile(cfg *Config, path string, seen ...string) error {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -2277,6 +2283,32 @@ func mergeYAMLFile(cfg *Config, path string) error {
 	}
 	dec := yaml.NewDecoder(bytes.NewReader(b))
 	dec.KnownFields(false)
+	// First pass: peel off `include:` only, so includes merge
+	// depth-first BEFORE this file's own keys (the including file
+	// overrides the fragment, same later-wins semantics as the layer
+	// stack). Paths are relative to the including file; the seen-set
+	// breaks cycles.
+	var shim struct {
+		Include []string `yaml:"include"`
+	}
+	if err := yaml.Unmarshal(b, &shim); err != nil {
+		return fmt.Errorf("parse includes in %s: %w", path, err)
+	}
+	for _, inc := range shim.Include {
+		if !filepath.IsAbs(inc) {
+			inc = filepath.Join(filepath.Dir(path), inc)
+		}
+		inc = filepath.Clean(inc)
+		if slices.Contains(seen, inc) {
+			return fmt.Errorf("include cycle: %s already in the chain", inc)
+		}
+		if err := mergeYAMLFile(cfg, inc, append(seen, inc)...); err != nil {
+			return err
+		}
+	}
+	// Second pass: the file's own keys, decoded straight into cfg —
+	// identical to the pre-include behavior (custom unmarshalers see
+	// the raw nodes).
 	if err := dec.Decode(cfg); err != nil {
 		return fmt.Errorf("parse %s: %w", path, err)
 	}

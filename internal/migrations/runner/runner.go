@@ -19,6 +19,7 @@ import (
 	"strings"
 
 	"github.com/stubbedev/treeman/internal/config"
+	"github.com/stubbedev/treeman/internal/envfile"
 	"github.com/stubbedev/treeman/internal/shellenv"
 	"github.com/stubbedev/treeman/internal/template"
 )
@@ -150,7 +151,9 @@ func Run(
 		if err != nil {
 			return Outcome{ExitCode: -1}, fmt.Errorf("%s.env[%s]: %w", spec.Label, k, err)
 		}
-		renderedEnv[k] = v
+		// ${VAR} interpolation after {key} rendering — the escape
+		// hatch for per-machine values in migrate/seed env (#78).
+		renderedEnv[k] = envfile.ExpandVars(v, nil)
 	}
 
 	c := exec.CommandContext(ctx, "sh", "-c", spec.Run)

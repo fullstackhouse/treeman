@@ -128,11 +128,22 @@ func RenderMap(tmpl string, vals map[string]string) (string, error) {
 
 // renderWith is the shared `{key}` scanner. lookup resolves a key to
 // its replacement; returning ok=false triggers RenderError.UnknownKey.
+// A `${...}` sequence is PASSED THROUGH untouched — dollar-braced
+// interpolation belongs to the env layer (envfile.ExpandVars), which
+// runs after {key} rendering (#78).
 func renderWith(tmpl string, lookup func(key string) (string, bool)) (string, error) {
 	var b strings.Builder
 	b.Grow(len(tmpl))
 	i := 0
 	for i < len(tmpl) {
+		if tmpl[i] == '$' && i+1 < len(tmpl) && tmpl[i+1] == '{' {
+			end := strings.IndexByte(tmpl[i+2:], '}')
+			if end >= 0 {
+				b.WriteString(tmpl[i : i+2+end+1])
+				i += 2 + end + 1
+				continue
+			}
+		}
 		if tmpl[i] != '{' {
 			b.WriteByte(tmpl[i])
 			i++

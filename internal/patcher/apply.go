@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/stubbedev/treeman/internal/config"
+	"github.com/stubbedev/treeman/internal/envfile"
 	"github.com/stubbedev/treeman/internal/template"
 )
 
@@ -107,7 +108,10 @@ func renderTemplates(file string, raw map[string]string, tplCtx template.Context
 		if err != nil {
 			return nil, fmt.Errorf("patch %s: render value for %q: %w", file, k, err)
 		}
-		out[k] = s
+		// {key} rendering first, then ${VAR} env interpolation — the
+		// escape hatch for per-machine values (absolute paths,
+		// usernames, local ports outside ports:) (#78).
+		out[k] = envfile.ExpandVars(s, nil)
 	}
 	return out, nil
 }

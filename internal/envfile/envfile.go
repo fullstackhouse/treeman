@@ -144,6 +144,14 @@ func stripQuotesAndComment(s string) string {
 // expand resolves `${VAR}` against the file's own prior keys, then
 // the process env. No recursion.
 func expand(s string, locals map[string]string) string {
+	return ExpandVars(s, locals)
+}
+
+// ExpandVars resolves `${VAR}` against `locals`, then the process
+// env. Unresolvable references are left verbatim. Exported for config
+// surfaces that allow env interpolation after `{key}` rendering —
+// patches[].set values and step env (#78).
+func ExpandVars(s string, locals map[string]string) string {
 	var b strings.Builder
 	b.Grow(len(s))
 	i := 0

@@ -19,13 +19,15 @@ create a worktree end-to-end
 
 ```
 Creates a linked worktree, patches the env files, registers it
-in SQLite, then dispatches setup hooks + prepare to the daemon. The
-CLI always returns immediately — follow progress with
-'treeman logs tail --follow'.
+in SQLite, then dispatches setup hooks + prepare to the daemon.
+Default is dispatch-and-return; --foreground subscribes to the run's
+events and blocks until finalize completes (its live progress lines
+are plain text on stderr, machine-parseable when piped).
 
 Examples:
   treeman worktree create PROJ-1234
   treeman worktree create feature/x --from origin/develop
+  treeman worktree create feature/x --foreground   # block until ready
   cd "$(treeman worktree create feat --print-path)"
 ```
 
@@ -38,6 +40,7 @@ Examples:
 | `--skip-prepare` | run hooks/links/copies/patches but provision no databases |
 | `--no-fetch` | skip the pre-create `git fetch origin <base>` (defaults on so new branches pick up upstream commits) |
 | `--print-path` | print only the new worktree path on stdout; status lines redirect to stderr (enables `cd "$(treeman worktree create …)"`) |
+| `-f`, `--wait`, `--foreground` | stream live progress and block until finalize completes (default: dispatch and return) |
 
 ### `treeman worktree delete`
 
@@ -46,9 +49,10 @@ delete a worktree end-to-end
 ```
 Runs teardown hooks + DB teardown + git worktree remove, then
 removes the registry row. The teardown is dispatched to the daemon
-over the RPC socket — the CLI returns immediately. If the daemon
-can't be reached (even after autostart), the teardown runs
-in-process instead (blocks until done).
+over the RPC socket — the CLI returns immediately. --foreground
+instead blocks until the teardown's worktree:delete:end event lands
+(live spinner on a TTY). If the daemon can't be reached (even after
+autostart), the teardown runs in-process instead (blocks until done).
 
 Several targets may be given, and the no-argument picker is a
 Tab-toggle multi-select — both delete every named worktree in one
@@ -56,6 +60,7 @@ invocation.
 
 Examples:
   treeman worktree delete PROJ-1234
+  treeman worktree delete PROJ-1234 --foreground   # block until dropped
   treeman worktree delete PROJ-1234 PROJ-5678       # several at once
   treeman worktree delete /path/to/wt --force      # remove stale registry entry
 ```
@@ -65,6 +70,7 @@ Examples:
 | `-r`, `--repo` |  |
 | `-f`, `--force` |  |
 | `-y`, `--yes` | skip the confirmation prompt |
+| `--foreground` | block until the daemon's teardown completes (worktree:delete:end); -f stays force, as in git |
 | `--dry-run` | resolve the target + print the git state and the per-engine drop plan; change nothing, connect nowhere |
 | `--detached` |  |
 
