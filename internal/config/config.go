@@ -776,8 +776,19 @@ type RedisConn struct {
 	// Maximum connections in the driver's pool (PoolSize). Defaults to
 	// the driver's own default when unset. Same knob as the SQL
 	// engines' pool_max.
-	PoolMax      uint32 `yaml:"pool_max,omitempty"`
-	ContainerRef `       yaml:",inline"`
+	PoolMax uint32 `yaml:"pool_max,omitempty"`
+
+	// Lower bound of the logical-DB window the per-worktree
+	// `{redis_queue_db}` / `{redis_cache_db}` tokens map into. Default
+	// 6. Lower this (together with db_max) for hosted Redis tiers or
+	// proxies that expose fewer than 16 logical DBs. Values outside
+	// 0..15 are rejected at load.
+	DBMin *int `yaml:"db_min,omitempty"`
+
+	// Upper bound of the logical-DB window. Default 15.
+	DBMax *int `yaml:"db_max,omitempty"`
+
+	ContainerRef `yaml:",inline"`
 }
 
 func (c *RedisConn) UnmarshalYAML(node *yaml.Node) error {
@@ -789,7 +800,62 @@ func (c *RedisConn) UnmarshalYAML(node *yaml.Node) error {
 	return node.Decode((*alias)(c))
 }
 
-func (RedisConn) JSONSchema() *jsonschema.Schema { return uriOrMap("redis", "url") }
+// validate checks the db window: bounds must land inside Redis's
+// logical-DB space (0..15) and min must not exceed max. Shadows the
+// promoted ContainerRef.validate so the ContainerRef check still runs.
+func (c *RedisConn) validate(path string) error {
+	err := c.ContainerRef.validate(path)
+	if err != nil {
+		return err
+	}
+	for _, f := range []struct {
+		name string
+		val  *int
+	}{{"db_min", c.DBMin}, {"db_max", c.DBMax}} {
+		if f.val == nil {
+			continue
+		}
+		if *f.val < 0 || *f.val > 15 {
+			return fmt.Errorf("%s.%s: %d outside logical DB space 0..15", path, f.name, *f.val)
+		}
+	}
+	if c.DBMin != nil && c.DBMax != nil && *c.DBMin > *c.DBMax {
+		return fmt.Errorf("%s: db_min %d > db_max %d", path, *c.DBMin, *c.DBMax)
+	}
+	return nil
+}
+
+// EffectiveDBRange resolves the window the slug → redis-index
+// derivation maps into, with the classic 6..15 defaults for unset
+// bounds. Used by the config loaders to seed the slug package.
+func (c *RedisConn) EffectiveDBRange() (lo, hi int) {
+	lo, hi = 6, 15
+	if c.DBMin != nil {
+		lo = *c.DBMin
+	}
+	if c.DBMax != nil {
+		hi = *c.DBMax
+	}
+	return lo, hi
+}
+
+func (RedisConn) JSONSchema() *jsonschema.Schema {
+	s := uriOrMap("redis", "url")
+	// Layer the redis-only db-window knobs into the structured branch.
+	for _, sch := range s.OneOf {
+		if sch.Type == "object" && sch.Properties != nil {
+			for _, field := range []string{"db_min", "db_max"} {
+				sch.Properties.Set(field, &jsonschema.Schema{
+					Type:        "integer",
+					Minimum:     json.Number("0"),
+					Maximum:     json.Number("15"),
+					Description: "Bound of the logical-DB window the {redis_queue_db}/{redis_cache_db} tokens map into (default window 6..15). Lower for hosted Redis tiers exposing fewer than 16 DBs.",
+				})
+			}
+		}
+	}
+	return s
+}
 
 // EsConn — Elasticsearch / OpenSearch HTTP URL. Same ContainerRef
 // semantics as MongoConn.

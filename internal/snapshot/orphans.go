@@ -34,12 +34,20 @@ var nameScopedTemplate = regexp.MustCompile(`^(_tm_(?:tmpl_[a-z]+_)?[0-9a-f]{16}
 // (`tm_<hex16>_<index>`); capture group 1 is the row-recorded prefix.
 var esTemplatePrefix = regexp.MustCompile(`^(tm_[0-9a-f]{16}_)`)
 
-// orphanFamilies is the probe's engine coverage. Redis is excluded:
-// its templates are key prefixes whose enumeration needs a full SCAN
-// (see engineconn.Conn.ListMatching), and stranded prefix keys cost
-// bytes, not databases.
+// redisTemplatePrefix matches key prefixes under a Redis snapshot
+// template (`_tm:<hex16>:…`); capture group 1 is the row-recorded
+// prefix. Redis templates are key prefixes in DB 0, not named
+// namespaces.
+var redisTemplatePrefix = regexp.MustCompile(`^(_tm:[0-9a-f]{16}:)`)
+
+// orphanFamilies is the probe's engine coverage. Redis is included:
+// its templates are key prefixes, but engineconn's ListMatching for
+// Redis now runs one bounded SCAN MATCH sweep per probe, so stranded
+// `_tm:` prefixes are findable (and DropSnapshot-able) without a
+// manual FLUSHDB.
 var orphanFamilies = []engine.Family{
 	engine.FamilyMySQL, engine.FamilyPostgres, engine.FamilyMongo, engine.FamilyES,
+	engine.FamilyRedis,
 }
 
 // templateNameSource is the store subset FindOrphans needs.
@@ -90,11 +98,16 @@ func FindOrphans(ctx context.Context, cfg *config.Config, st templateNameSource)
 // listTemplates returns the engine's template namespaces in the same
 // form the snapshots rows record them: base database names (spares
 // folded into their template) for name-scoped engines, index-name
-// prefixes for ES. Results are deduped.
+// prefixes for ES, key prefixes for Redis. Results are deduped.
 func listTemplates(ctx context.Context, conn engineconn.Conn, fam engine.Family) ([]string, error) {
 	prefix, re := "_tm_", nameScopedTemplate
-	if fam == engine.FamilyES {
+	switch fam {
+	case engine.FamilyES:
 		prefix, re = "tm_", esTemplatePrefix
+	case engine.FamilyRedis:
+		prefix, re = "_tm:", redisTemplatePrefix
+	case engine.FamilyMySQL, engine.FamilyPostgres, engine.FamilyMongo, engine.FamilyS3:
+		// name-scoped default already set
 	}
 	names, err := conn.ListMatching(ctx, prefix)
 	if err != nil {

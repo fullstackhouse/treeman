@@ -8,6 +8,7 @@
 package slug
 
 import (
+	"fmt"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -47,12 +48,42 @@ func (s Slug) Dashed() string {
 	return strings.ReplaceAll(s.Value, "_", "-")
 }
 
-// RedisIndices returns (queue_db, cache_db), each in 6..15, derived
-// deterministically from the slug via POSIX `cksum`.
+// RedisDBRange returns the inclusive logical-DB window the slug →
+// redis-index derivation maps into. Default 6..15.
+func RedisDBRange() (lo, hi uint8) { return redisDBMin, redisDBMax }
+
+var redisDBMin, redisDBMax uint8 = 6, 15
+
+// SetRedisDBRange pins the logical-DB window RedisIndices maps into.
+// The config loaders call it from connections.redis db_min/db_max so
+// hosted Redis tiers and proxies that expose fewer than 16 databases
+// still get deterministic per-slug indices. Not concurrency-safe by
+// design: like ui.SetColorMode it's set once at config load, before
+// any template rendering fans out.
+func SetRedisDBRange(lo, hi int) error {
+	if lo < 0 || hi > 15 {
+		return fmt.Errorf("redis db range [%d, %d] outside logical DB space 0..15", lo, hi)
+	}
+	if lo > hi {
+		return fmt.Errorf("redis db range min %d > max %d", lo, hi)
+	}
+	// Bounds-checked above; the conversions cannot truncate.
+	redisDBMin, redisDBMax = uint8(lo), uint8(hi) //nolint:gosec // range-validated 0..15
+	return nil
+}
+
+// RedisIndices returns (queue_db, cache_db), each inside the
+// configured window (default 6..15), derived deterministically from
+// the slug via POSIX `cksum`. Generalised window: the digit-pair
+// selection becomes modulo span, so a narrowed range (e.g. a
+// single-DB hosted server: 0..0) collapses every slug onto the same
+// index deterministically — prefix isolation keeps worktrees distinct.
 func (s Slug) RedisIndices() (queueDB, cacheDB uint8) {
 	h := sysvCksum([]byte(s.Value))
-	queueDB = uint8(h%10 + 6)
-	cacheDB = uint8((h/10)%10 + 6)
+	span := int(redisDBMax-redisDBMin) + 1
+	lo := int(redisDBMin)
+	queueDB = uint8(int(h)%span + lo)    //nolint:gosec // result is within the 0..15 window by construction
+	cacheDB = uint8(int(h/10)%span + lo) //nolint:gosec // same window guarantee
 	return
 }
 

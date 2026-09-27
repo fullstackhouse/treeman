@@ -2,6 +2,7 @@ package resolve
 
 import (
 	"github.com/stubbedev/treeman/internal/config"
+	"github.com/stubbedev/treeman/internal/slug"
 )
 
 // LoadResolved is the canonical "load + fill-in-credentials"
@@ -26,6 +27,7 @@ func LoadResolved(repoRoot string) (config.Config, error) {
 			return cfg, err
 		}
 		ApplyEnvCredentials(&cfg, repoRoot)
+		applyRedisDBRange(&cfg)
 		return cfg, nil
 	})
 }
@@ -49,6 +51,18 @@ func LoadResolvedForWorktree(mainRoot, wtRoot string) (config.Config, error) {
 		} else {
 			ApplyEnvCredentials(&cfg, mainRoot)
 		}
+		applyRedisDBRange(&cfg)
 		return cfg, nil
 	})
+}
+
+// applyRedisDBRange pins the slug → redis-index window from
+// connections.redis db_min/db_max (hosted tiers exposing <16 logical
+// DBs). Config validation bounds the values; the default 6..15 stays
+// untouched when redis isn't configured or the knobs are omitted.
+func applyRedisDBRange(cfg *config.Config) {
+	if r := cfg.Connections.Redis; r != nil {
+		lo, hi := r.EffectiveDBRange()
+		_ = slug.SetRedisDBRange(lo, hi)
+	}
 }

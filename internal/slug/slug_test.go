@@ -192,3 +192,42 @@ func TestRedisIndicesPinned(t *testing.T) {
 		t.Fatalf("indices drifted: got (%d,%d) want (%d,%d) (cksum=%d)", q, c, wantQ, wantC, h)
 	}
 }
+
+// TestRedisIndicesCustomRange pins the db_min/db_max window: indices
+// land inside the configured bounds, stay deterministic across calls,
+// and a single-DB server (0..0) collapses every slug onto DB 0 —
+// prefix isolation keeps worktrees distinct there.
+func TestRedisIndicesCustomRange(t *testing.T) {
+	if err := SetRedisDBRange(2, 5); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = SetRedisDBRange(6, 15) })
+
+	s := Slug{Value: "proj_1234", Source: SourceTicket}
+	q1, c1 := s.RedisIndices()
+	if q1 < 2 || q1 > 5 || c1 < 2 || c1 > 5 {
+		t.Fatalf("indices (%d,%d) outside configured window 2..5", q1, c1)
+	}
+	q2, c2 := s.RedisIndices()
+	if q1 != q2 || c1 != c2 {
+		t.Fatalf("derivation not deterministic: (%d,%d) then (%d,%d)", q1, c1, q2, c2)
+	}
+
+	if err := SetRedisDBRange(0, 0); err != nil {
+		t.Fatal(err)
+	}
+	q3, c3 := s.RedisIndices()
+	if q3 != 0 || c3 != 0 {
+		t.Fatalf("single-DB window should pin both indices to 0, got (%d,%d)", q3, c3)
+	}
+}
+
+func TestSetRedisDBRangeRejectsBadWindows(t *testing.T) {
+	for _, tc := range []struct{ min, max int }{
+		{-1, 5}, {0, 16}, {7, 3},
+	} {
+		if err := SetRedisDBRange(tc.min, tc.max); err == nil {
+			t.Errorf("SetRedisDBRange(%d, %d) should reject", tc.min, tc.max)
+		}
+	}
+}

@@ -104,3 +104,28 @@ func TestVersionAtLeast(t *testing.T) {
 		}
 	}
 }
+
+// TestExtractTemplatePrefix pins the orphan scanner's key → template
+// reduction: only treeman's own `_tm:<hex16>:` shapes count, sibling
+// prefixes and user keys never do, and the match preserves the full
+// prefix (trailing colon) so later reaps stay scoped.
+func TestExtractTemplatePrefix(t *testing.T) {
+	cases := []struct {
+		key  string
+		want string
+	}{
+		{"_tm:0123456789abcdef:queue:jobs:1", "_tm:0123456789abcdef:"},
+		{"_tm:0123456789abcdef:", "_tm:0123456789abcdef:"},
+		{"_tm:0123456789abcde:jobs", ""},   // 15 hex chars — not ours
+		{"_tm:0123456789abcdefg:jobs", ""}, // 17 hex chars
+		{"_tm:GHIJ456789abcdef:jobs", ""},  // non-hex
+		{"user:session:42", ""},            // user key
+		{"app_prod:cache:1", ""},           // sibling worktree key
+		{"_tm_:0123456789abcdef:1", ""},    // wrong separator shape
+	}
+	for _, c := range cases {
+		if got := extractTemplatePrefix(c.key); got != c.want {
+			t.Errorf("extractTemplatePrefix(%q) = %q, want %q", c.key, got, c.want)
+		}
+	}
+}

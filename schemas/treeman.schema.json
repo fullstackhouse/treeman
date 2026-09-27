@@ -836,6 +836,18 @@
             },
             "container_network": {
               "type": "string"
+            },
+            "db_min": {
+              "type": "integer",
+              "maximum": 15,
+              "minimum": 0,
+              "description": "Bound of the logical-DB window the {redis_queue_db}/{redis_cache_db} tokens map into (default window 6..15). Lower for hosted Redis tiers exposing fewer than 16 DBs."
+            },
+            "db_max": {
+              "type": "integer",
+              "maximum": 15,
+              "minimum": 0,
+              "description": "Bound of the logical-DB window the {redis_queue_db}/{redis_cache_db} tokens map into (default window 6..15). Lower for hosted Redis tiers exposing fewer than 16 DBs."
             }
           },
           "additionalProperties": false,

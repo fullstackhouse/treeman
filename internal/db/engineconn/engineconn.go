@@ -160,9 +160,16 @@ func (c redisConn) DropMatching(ctx context.Context, n string) (int, error) {
 
 func (c redisConn) DropSnapshot(ctx context.Context, n string) error { return c.d.DropSnapshot(ctx, n) }
 
-// ListMatching is nil for Redis: enumerating a key prefix needs a full
-// SCAN — too expensive for an inspection probe (mirrors SizeKB).
-func (redisConn) ListMatching(context.Context, string) ([]string, error) { return nil, nil }
+// ListMatching enumerates snapshot template key-prefixes under `p`
+// (e.g. `_tm`) as distinct `_tm:<hex16>:` prefixes via a bounded SCAN.
+// This is what re-enabled Redis in the orphan scanner: the SCAN runs
+// once per doctor/GC probe, not per worktree op, so the old
+// "too expensive for an inspection probe" caveat no longer buys
+// anything — and stranded template prefixes previously leaked until a
+// manual FLUSHDB.
+func (c redisConn) ListMatching(ctx context.Context, p string) ([]string, error) {
+	return c.d.ListTemplatePrefixes(ctx, p)
+}
 
 // SizeKB is 0 for Redis: prefix size has no cheap server-side query —
 // it would need a SCAN + per-key MEMORY USAGE, too expensive for an

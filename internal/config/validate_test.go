@@ -14,6 +14,9 @@ var (
 	negInt64  = int64(-1)
 )
 
+// ptr is a tiny helper for the *int config knobs under test.
+func ptr(i int) *int { return &i }
+
 func TestValidate(t *testing.T) {
 	cases := []struct {
 		name string
@@ -65,6 +68,33 @@ func TestValidate(t *testing.T) {
 				},
 			},
 			want: "connections.mysql.collation",
+		},
+		{
+			name: "redis db window within 0..15 is valid",
+			cfg: Config{
+				Connections: ConnectionsConfig{
+					Redis: &RedisConn{URL: "redis://localhost:6379/0", DBMin: ptr(0), DBMax: ptr(0)},
+				},
+			},
+			want: "",
+		},
+		{
+			name: "redis db_min above 15 rejected",
+			cfg: Config{
+				Connections: ConnectionsConfig{
+					Redis: &RedisConn{URL: "redis://localhost:6379/0", DBMin: ptr(16)},
+				},
+			},
+			want: "db_min: 16 outside",
+		},
+		{
+			name: "redis db_min above db_max rejected",
+			cfg: Config{
+				Connections: ConnectionsConfig{
+					Redis: &RedisConn{URL: "redis://localhost:6379/0", DBMin: ptr(9), DBMax: ptr(3)},
+				},
+			},
+			want: "db_min 9 > db_max 3",
 		},
 		{
 			name: "database engine required",

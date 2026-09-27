@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -425,3 +426,39 @@ func (d *Driver) client() *redis.Client {
 // pooled client; callers MUST NOT Close it — the Driver owns the
 // lifecycle.
 func (d *Driver) Client() *redis.Client { return d.client() }
+
+// redisTemplatePrefix matches the snapshot template key-prefix form
+// prepareRedisPrefix derives (`_tm:<hex16>:`); capture group 1 is the
+// full prefix, so dedupe and later reaps operate on exactly the string
+// the snapshots rows record.
+var redisTemplatePrefix = regexp.MustCompile(`^(_tm:[0-9a-f]{16}:)`)
+
+// extractTemplatePrefix reduces one key to its owning template prefix,
+// or "" when the key isn't under one.
+func extractTemplatePrefix(key string) string {
+	if m := redisTemplatePrefix.FindStringSubmatch(key); m != nil {
+		return m[1]
+	}
+	return ""
+}
+
+// ListTemplatePrefixes enumerates the distinct snapshot template key
+// prefixes starting with `p` via a bounded SCAN MATCH. Backs the
+// orphan scanner (engineconn.ListMatching for Redis): one SCAN sweep
+// per probe, batches of 1000, UNLINK-side cost only.
+func (d *Driver) ListTemplatePrefixes(ctx context.Context, p string) ([]string, error) {
+	if p == "" {
+		return nil, errors.New("redis: refusing to scan empty prefix (would sweep every key)")
+	}
+	c := d.client()
+	iter := c.Scan(ctx, 0, globEscape(p)+"*", 1000).Iterator()
+	seen := map[string]bool{}
+	var out []string
+	for iter.Next(ctx) {
+		if tp := extractTemplatePrefix(iter.Val()); tp != "" && !seen[tp] {
+			seen[tp] = true
+			out = append(out, tp)
+		}
+	}
+	return out, iter.Err()
+}
