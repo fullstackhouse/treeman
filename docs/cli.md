@@ -420,7 +420,9 @@ four buckets — stable (ready), up (preparing), down (tearing down),
 failed (last finalize errored) — and renders them.
 
 Formats (--format):
-  icon    one-line counter (default), plain text
+  table   aligned per-worktree table, colored states + relative age
+          (default when stdout is a TTY)
+  icon    one-line counter, plain text (default when piped)
   hover   per-repo grouped detail, plain text (the "cal-style" block)
   waybar  {"text","tooltip","class"} JSON for a waybar custom module
   json    the raw aggregated shape (counts + per-repo worktrees)
@@ -432,7 +434,7 @@ formats are all configured under the global config's status: block.
 
 | Flag | Usage |
 |---|---|
-| `-f`, `--format` | icon \| hover \| waybar \| json \| <name from status.formats> |
+| `-f`, `--format` | table \| icon \| hover \| waybar \| json \| <name from status.formats> (default: table on a TTY, else icon) |
 
 ### `treeman main`
 
@@ -839,6 +841,8 @@ print the slug treeman derives for a worktree
 | `--force` |  |
 | `--json` |  |
 | `--global` | scaffold the user-global ~/.config/treeman/config.yaml (machine-wide defaults) instead of a per-repo .treeman.yaml |
+| `--engine` | comma-separated engines to activate in databases: (e.g. mysql,postgres,redis) — emits minimal blocks when detection found no framework |
+| `--interactive` | pick engines from a terminal picker instead of --engine (declines gracefully when stdin is not a TTY) |
 
 ### `treeman doctor`
 
