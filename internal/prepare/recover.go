@@ -6,11 +6,7 @@ import (
 	"log/slog"
 
 	"github.com/stubbedev/treeman/internal/config"
-	dbes "github.com/stubbedev/treeman/internal/db/es"
-	dbmongo "github.com/stubbedev/treeman/internal/db/mongo"
-	dbmysql "github.com/stubbedev/treeman/internal/db/mysql"
-	dbpostgres "github.com/stubbedev/treeman/internal/db/postgres"
-	dbredis "github.com/stubbedev/treeman/internal/db/redis"
+	"github.com/stubbedev/treeman/internal/db/engineconn"
 	"github.com/stubbedev/treeman/internal/engine"
 	"github.com/stubbedev/treeman/internal/slug"
 	"github.com/stubbedev/treeman/internal/store"
@@ -88,9 +84,9 @@ func RecoverStaleWorktree(
 
 // recoverTestClone drops the per-worktree source DB (and its
 // fingerprint-keyed test-clone family) so the next prepare cold-builds
-// it fresh. Uses the engine driver's DropMatching helper which prefix-
-// matches the slug-rendered base name — same primitive TeardownDatabases
-// uses on `wt delete`, but without the surrounding hook + git plumbing.
+// it fresh. Goes through engineconn.Connect + Conn.DropMatching — one
+// registry-driven path for every family (#47): a driver registered in
+// the engineconn registry gets recovery for free.
 func recoverTestClone(
 	ctx context.Context,
 	cfg *config.Config,
@@ -99,189 +95,28 @@ func recoverTestClone(
 	repoID, worktreeID int64,
 	st *store.Store,
 ) error {
-	switch fam, _ := engine.Canonical(d.Engine); fam {
-	case engine.FamilyMySQL:
-		return recoverTestCloneMySQL(ctx, cfg, d, tplCtx, repoID, worktreeID, st)
-	case engine.FamilyPostgres:
-		return recoverTestClonePostgres(ctx, cfg, d, tplCtx, repoID, worktreeID, st)
-	case engine.FamilyMongo:
-		return recoverTestCloneMongo(ctx, cfg, d, tplCtx, repoID, worktreeID, st)
-	case engine.FamilyRedis:
-		return recoverTestCloneRedis(ctx, cfg, d, tplCtx, repoID, worktreeID, st)
-	case engine.FamilyES:
-		return recoverTestCloneES(ctx, cfg, d, tplCtx, repoID, worktreeID, st)
-	case engine.FamilyS3:
-		// S3 has no test-clone family (validate.go rejects test_clones
-		// for object stores) — nothing to recover.
-		return nil
-	}
-	return nil
-}
-
-// recoverTestCloneMySQL drops the MySQL source DB family for stale-
-// worktree recovery. Extracted verbatim from recoverTestClone's
-// `mysql` switch arm.
-func recoverTestCloneMySQL(
-	ctx context.Context,
-	cfg *config.Config,
-	d config.DatabaseConfig,
-	tplCtx template.Context,
-	repoID, worktreeID int64,
-	st *store.Store,
-) error {
-	if cfg.Connections.Mysql == nil {
-		return nil
-	}
-	drv, err := dbmysql.Connect(ctx, *cfg.Connections.Mysql)
+	fam, _ := engine.Canonical(d.Engine)
+	conn, configured, err := engineconn.Connect(ctx, cfg, fam)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = drv.Close() }()
+	if !configured {
+		// No connection block: nothing to drop, same as before.
+		return nil
+	}
+	defer func() { _ = conn.Close() }()
 	name, err := template.Render(d.NameTemplate, tplCtx)
 	if err != nil {
 		return err
 	}
-	dropped, err := drv.DropMatching(ctx, name)
+	dropped, err := conn.DropMatching(ctx, name)
 	if err != nil {
 		return err
 	}
-	emitRecoveryDrop(ctx, st, repoID, worktreeID, d.Engine, name, len(dropped))
+	emitRecoveryDrop(ctx, st, repoID, worktreeID, d.Engine, name, dropped)
 	return nil
 }
 
-// recoverTestClonePostgres drops the Postgres source DB family for
-// stale-worktree recovery. Extracted verbatim from recoverTestClone's
-// `postgres` switch arm.
-func recoverTestClonePostgres(
-	ctx context.Context,
-	cfg *config.Config,
-	d config.DatabaseConfig,
-	tplCtx template.Context,
-	repoID, worktreeID int64,
-	st *store.Store,
-) error {
-	if cfg.Connections.Postgres == nil {
-		return nil
-	}
-	drv, err := dbpostgres.Connect(ctx, *cfg.Connections.Postgres)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = drv.Close() }()
-	name, err := template.Render(d.NameTemplate, tplCtx)
-	if err != nil {
-		return err
-	}
-	dropped, err := drv.DropMatching(ctx, name)
-	if err != nil {
-		return err
-	}
-	emitRecoveryDrop(ctx, st, repoID, worktreeID, d.Engine, name, len(dropped))
-	return nil
-}
-
-// recoverTestCloneMongo drops the MongoDB source DB family for stale-
-// worktree recovery. Extracted verbatim from recoverTestClone's
-// `mongodb` switch arm.
-func recoverTestCloneMongo(
-	ctx context.Context,
-	cfg *config.Config,
-	d config.DatabaseConfig,
-	tplCtx template.Context,
-	repoID, worktreeID int64,
-	st *store.Store,
-) error {
-	if cfg.Connections.Mongodb == nil {
-		return nil
-	}
-	drv, err := dbmongo.Connect(ctx, *cfg.Connections.Mongodb)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = drv.Close(ctx) }()
-	name, err := template.Render(d.NameTemplate, tplCtx)
-	if err != nil {
-		return err
-	}
-	dropped, err := drv.DropMatching(ctx, name)
-	if err != nil {
-		return err
-	}
-	emitRecoveryDrop(ctx, st, repoID, worktreeID, d.Engine, name, len(dropped))
-	return nil
-}
-
-// recoverTestCloneRedis drops the Redis key prefix for stale-worktree
-// recovery. Extracted verbatim from recoverTestClone's `redis` arm.
-func recoverTestCloneRedis(
-	ctx context.Context,
-	cfg *config.Config,
-	d config.DatabaseConfig,
-	tplCtx template.Context,
-	repoID, worktreeID int64,
-	st *store.Store,
-) error {
-	if cfg.Connections.Redis == nil {
-		return nil
-	}
-	if d.KeyPrefix == "" {
-		return nil
-	}
-	drv, err := dbredis.Connect(ctx, *cfg.Connections.Redis)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = drv.Close() }()
-	prefix, err := template.Render(d.KeyPrefix, tplCtx)
-	if err != nil {
-		return err
-	}
-	dropped, err := drv.DropPrefix(ctx, prefix)
-	if err != nil {
-		return err
-	}
-	emitRecoveryDrop(ctx, st, repoID, worktreeID, d.Engine, prefix, dropped)
-	return nil
-}
-
-// recoverTestCloneES drops the Elasticsearch / OpenSearch index prefix
-// for stale-worktree recovery. Extracted verbatim from
-// recoverTestClone's `elasticsearch` switch arm.
-func recoverTestCloneES(
-	ctx context.Context,
-	cfg *config.Config,
-	d config.DatabaseConfig,
-	tplCtx template.Context,
-	repoID, worktreeID int64,
-	st *store.Store,
-) error {
-	if cfg.Connections.Elasticsearch == nil {
-		return nil
-	}
-	if d.KeyPrefix == "" {
-		return nil
-	}
-	drv, err := dbes.Connect(ctx, *cfg.Connections.Elasticsearch)
-	if err != nil {
-		return err
-	}
-	prefix, err := template.Render(d.KeyPrefix, tplCtx)
-	if err != nil {
-		return err
-	}
-	dropped, err := drv.DropMatching(ctx, prefix)
-	if err != nil {
-		return err
-	}
-	emitRecoveryDrop(ctx, st, repoID, worktreeID, d.Engine, prefix, len(dropped))
-	return nil
-}
-
-// recoverBranchScoped drops the active namespace WITHOUT capturing
-// it first. The captured copy would otherwise clobber the durable
-// per-branch backup with partially-migrated data — exactly the
-// scenario this recovery is trying to undo. The durable copy is
-// left intact; the next prepare re-fills from it.
 func recoverBranchScoped(
 	ctx context.Context,
 	cfg *config.Config,

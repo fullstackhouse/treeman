@@ -98,6 +98,33 @@ Every daemon goroutine — accept loop, per-connection handler, watcher
 loops, plan lanes, background reapers — runs through `pkg/safego`,
 which recovers panics so one bad async task can't take down the daemon.
 
+## Adding an engine
+
+The per-family switches live in ONE place: the driver registry in
+`internal/db/engineconn` (`registry.go` + the explicit production list
+in `registry_drivers.go`). Everything else — `engineconn.Connect`,
+`engineconn.Configured`, prepare, teardown, GC, and stale-worktree
+recovery — is registry-driven and picks a new engine up for free.
+
+Checklist for a new engine family (≤4 touchpoints, #47):
+
+1. **Driver package** `internal/db/<engine>`: dial + the `Conn`
+   primitives (Drop/Exists/ListMatching/DropMatching/…).
+2. **Registry entry** in `engineconn/registry_drivers.go`: a
+   `Configured` field-check and a `Connect` dialer.
+3. **Config**: a `ConnectionsConfig` field, a `databases[].engine`
+   alias pair in `engine.Known` + `engine.Canonical`, and a
+   `validate.go` rule if the family can't support some modes.
+4. **Extras** (only what applies): a patcher driver if config files
+   need rewriting, an `initgen` preset if a framework pairs with it,
+   docker-tier e2e under `e2e/<engine>`.
+
+The jsonschema `engine` enum is GENERATED from `engine.Known`
+(`just sync-schema`) — adding an alias cannot half-land. History:
+the pre-registry switches drifted (the GC once rejected `mongodb`
+while prepare accepted it), which is what this table exists to
+prevent.
+
 ## Development
 
 ```sh

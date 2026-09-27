@@ -278,84 +278,26 @@ func (s3Conn) SizeKB(context.Context, string) int64 { return 0 }
 // Configured reports whether `fam` has a connection block in cfg —
 // i.e. whether Connect would return configured=true. Lets callers cheaply
 // skip an engine that was never wired up without opening a connection.
+// The registry's cheap check, no dialing (#47).
 func Configured(cfg *config.Config, fam engine.Family) bool {
-	switch fam {
-	case engine.FamilyMySQL:
-		return cfg.Connections.Mysql != nil
-	case engine.FamilyPostgres:
-		return cfg.Connections.Postgres != nil
-	case engine.FamilyMongo:
-		return cfg.Connections.Mongodb != nil
-	case engine.FamilyRedis:
-		return cfg.Connections.Redis != nil
-	case engine.FamilyES:
-		return cfg.Connections.Elasticsearch != nil
-	case engine.FamilyS3:
-		return cfg.Connections.S3 != nil
+	f, ok := Factory(fam)
+	if !ok {
+		return false
 	}
-	return false
+	return f.Configured(cfg)
 }
 
-// Connect dials the engine for `fam`, returning a uniform Conn.
-// `configured` is false (with a nil Conn + nil error) when the engine has
-// no connection block, letting callers distinguish "not wired up" from
-// "configured but unreachable". The caller owns Close.
+// Connect dials the engine for `fam` via its registered DriverFactory,
+// returning a uniform Conn. `configured` is false (with a nil Conn +
+// nil error) when the engine has no connection block, letting callers
+// distinguish "not wired up" from "configured but unreachable". The
+// caller owns Close. A family with no registered factory reports the
+// same shape as an unconfigured one — alias tables (engine.Known)
+// decide which families are legal upstream of here.
 func Connect(ctx context.Context, cfg *config.Config, fam engine.Family) (conn Conn, configured bool, err error) {
-	switch fam {
-	case engine.FamilyMySQL:
-		if cfg.Connections.Mysql == nil {
-			return nil, false, nil
-		}
-		d, e := dbmysql.Connect(ctx, *cfg.Connections.Mysql)
-		if e != nil {
-			return nil, true, e
-		}
-		return mysqlConn{d}, true, nil
-	case engine.FamilyPostgres:
-		if cfg.Connections.Postgres == nil {
-			return nil, false, nil
-		}
-		d, e := dbpostgres.Connect(ctx, *cfg.Connections.Postgres)
-		if e != nil {
-			return nil, true, e
-		}
-		return postgresConn{d}, true, nil
-	case engine.FamilyMongo:
-		if cfg.Connections.Mongodb == nil {
-			return nil, false, nil
-		}
-		d, e := dbmongo.Connect(ctx, *cfg.Connections.Mongodb)
-		if e != nil {
-			return nil, true, e
-		}
-		return mongoConn{d, ctx}, true, nil
-	case engine.FamilyRedis:
-		if cfg.Connections.Redis == nil {
-			return nil, false, nil
-		}
-		d, e := dbredis.Connect(ctx, *cfg.Connections.Redis)
-		if e != nil {
-			return nil, true, e
-		}
-		return redisConn{d}, true, nil
-	case engine.FamilyES:
-		if cfg.Connections.Elasticsearch == nil {
-			return nil, false, nil
-		}
-		d, e := dbes.Connect(ctx, *cfg.Connections.Elasticsearch)
-		if e != nil {
-			return nil, true, e
-		}
-		return esConn{d}, true, nil
-	case engine.FamilyS3:
-		if cfg.Connections.S3 == nil {
-			return nil, false, nil
-		}
-		d, e := dbs3.Connect(ctx, *cfg.Connections.S3)
-		if e != nil {
-			return nil, true, e
-		}
-		return s3Conn{d}, true, nil
+	f, ok := Factory(fam)
+	if !ok {
+		return nil, false, nil
 	}
-	return nil, false, nil
+	return f.Connect(ctx, cfg)
 }

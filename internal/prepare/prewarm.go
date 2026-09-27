@@ -14,9 +14,9 @@ import (
 	"github.com/stubbedev/treeman/internal/config"
 	"github.com/stubbedev/treeman/internal/db/engineconn"
 	"github.com/stubbedev/treeman/internal/engine"
-	"github.com/stubbedev/treeman/pkg/safego"
 	"github.com/stubbedev/treeman/internal/snapshot"
 	"github.com/stubbedev/treeman/internal/store"
+	"github.com/stubbedev/treeman/pkg/safego"
 )
 
 // spareEngine bundles the spare-pool capabilities of one engine's
