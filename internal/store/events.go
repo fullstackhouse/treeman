@@ -157,9 +157,10 @@ func (s *Store) QueryEvents(ctx context.Context, f EventFilter) ([]Event, error)
 // LatestEventPerWorktree returns the newest event among eventTypes
 // for each listed worktree — the batched form of the per-worktree
 // QueryEvents(Limit 1) lookups the status widget used to fire per row
-// per bar tick (N+1 queries). One query ordered newest-first, first
-// row per worktree id wins; worktrees with no matching event are
-// absent from the map.
+// per bar tick (N+1 queries). A MAX(id)-per-worktree subquery bounds
+// the materialized rows to <= len(wtIDs) instead of every matching
+// event in retention; worktrees with no matching event are absent
+// from the map.
 func (s *Store) LatestEventPerWorktree(ctx context.Context, wtIDs []int64, eventTypes []string) (map[int64]Event, error) {
 	out := map[int64]Event{}
 	if len(wtIDs) == 0 || len(eventTypes) == 0 {
@@ -169,9 +170,12 @@ func (s *Store) LatestEventPerWorktree(ctx context.Context, wtIDs []int64, event
 	q := `SELECT e.id, e.ts, e.level, e.repo_id, e.worktree_id, e.event_type,
 		COALESCE(e.phase,''), COALESCE(e.message,''), e.payload_json, e.duration_ms
 		FROM events e
-		WHERE e.worktree_id IN (` + placeholders(len(wtIDs)) + `)
-		AND e.event_type IN (` + placeholders(len(eventTypes)) + `)
-		ORDER BY e.ts DESC, e.id DESC`
+		JOIN (
+			SELECT worktree_id, MAX(id) AS id FROM events
+			WHERE worktree_id IN (` + placeholders(len(wtIDs)) + `)
+			AND event_type IN (` + placeholders(len(eventTypes)) + `)
+			GROUP BY worktree_id
+		) m ON m.id = e.id`
 	args := make([]any, 0, len(wtIDs)+len(eventTypes))
 	for _, id := range wtIDs {
 		args = append(args, id)
