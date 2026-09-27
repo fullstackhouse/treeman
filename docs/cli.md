@@ -435,6 +435,9 @@ formats are all configured under the global config's status: block.
 | Flag | Usage |
 |---|---|
 | `-f`, `--format` | table \| icon \| hover \| waybar \| json \| <name from status.formats> (default: table on a TTY, else icon) |
+| `--repo` | limit the summary to the repo rooted at <path> (default: all registered repos) |
+| `--watch` | re-render in place on an interval until Ctrl-C (terminal formats only; see --watch-interval) |
+| `--watch-interval` | refresh interval for --watch (e.g. 2s, 500ms) |
 
 ### `treeman main`
 
@@ -851,7 +854,8 @@ health-check the local treeman setup
 | Flag | Usage |
 |---|---|
 | `--json` | emit one JSON line per check |
-| `--fix` | auto-apply remediations for `schema` (install) and `registry` (repair) checks; re-runs the probe so the printed result reflects the post-fix state |
+| `--fix` | auto-apply remediations: `daemon` (start via daemonctl), `config` (scaffold after confirm), `schema` (install), `registry` (repair), `snapshots` (drop orphans); re-runs the probe so the printed result reflects the post-fix state |
+| `--yes` | with --fix: answer yes to fix-time confirms (e.g. the config scaffold) |
 
 ### `treeman registry`
 

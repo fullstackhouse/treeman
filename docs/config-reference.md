@@ -718,17 +718,16 @@ _min: 0 · max: 64_
 #### `prewarm` *(integer)*
 
 Prewarm keeps N spare clones pre-restored from this database's
-cached template (MySQL and Postgres — the engines whose drivers
-can create and cheaply claim spares; other engines are rejected
-at config load). A cache-hit prepare claims a spare — Postgres
-via `ALTER DATABASE … RENAME` (milliseconds, size-independent),
-MySQL via a physical clone of the spare (file-copy import, no
-logical dump load) — instead of paying a full restore per
-target; a detached replenisher then tops the pool back up.
-Spares are named `<template>_spare<n>`, survive worktree
-teardown (they belong to the template cache, not a worktree),
-and are dropped with their template on snapshot eviction. Range
-0–16; default 0 (off). Mutually exclusive with `branch_scoped`.
+cached template (Postgres only — other engines have no
+constant-time whole-database rename, so the knob is rejected at
+config load). A cache-hit prepare claims a spare via
+`ALTER DATABASE … RENAME` (milliseconds, size-independent)
+instead of paying `CREATE DATABASE … TEMPLATE` per restore; a
+detached replenisher then tops the pool back up. Spares are
+named `<template>_spare<n>`, survive worktree teardown (they
+belong to the template cache, not a worktree), and are dropped
+with their template on snapshot eviction. Range 0–16; default
+0 (off). Mutually exclusive with `branch_scoped`.
 
 _min: 0 · max: 16_
 

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/urfave/cli/v3"
 
@@ -92,13 +93,23 @@ formats are all configured under the global config's status: block.`,
 				Value:   "",
 				Usage:   "table | icon | hover | waybar | json | <name from status.formats> (default: table on a TTY, else icon)",
 			},
+			&cli.StringFlag{
+				Name:  "repo",
+				Value: "",
+				Usage: "limit the summary to the repo rooted at <path> (default: all registered repos)",
+			},
+			&cli.BoolFlag{
+				Name:  "watch",
+				Usage: "re-render in place on an interval until Ctrl-C (terminal formats only; see --watch-interval)",
+			},
+			&cli.DurationFlag{
+				Name:  "watch-interval",
+				Value: time.Second,
+				Usage: "refresh interval for --watch (e.g. 2s, 500ms)",
+			},
 		},
 		Action: func(ctx context.Context, c *cli.Command) error {
 			gcfg, err := config.LoadGlobal()
-			if err != nil {
-				return err
-			}
-			data, err := collectStatus(ctx)
 			if err != nil {
 				return err
 			}
@@ -111,6 +122,20 @@ formats are all configured under the global config's status: block.`,
 					format = "table"
 				}
 			}
+			if c.Bool("watch") {
+				// Machine formats are one-shot shapes (a widget or a jq
+				// pipeline re-invokes the command itself); --watch is the
+				// terminal experience.
+				switch format {
+				case "json", "waybar":
+					return fmt.Errorf("--watch is for terminal formats (table/icon/hover); --format %s is a one-shot machine shape", format)
+				}
+				return watchStatus(ctx, c.String("repo"), format, gcfg.Status, c.Duration("watch-interval"))
+			}
+			data, err := collectStatus(ctx, c.String("repo"))
+			if err != nil {
+				return err
+			}
 			out, err := renderStatus(format, data, gcfg.Status)
 			if err != nil {
 				return err
@@ -121,10 +146,34 @@ formats are all configured under the global config's status: block.`,
 	}
 }
 
+// watchStatus re-collects + re-renders on a ticker, redrawing in place
+// via ANSI cursor-home (NO_COLOR / non-TTY degrades to plain repeated
+// prints, still correct — just scrollier). Ctrl-C ends the loop; a
+// store error prints once and keeps retrying so a daemon restart
+// doesn't kill the watch.
+func watchStatus(ctx context.Context, repoFilter, format string, cfg config.StatusConfig, interval time.Duration) error {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		data, err := collectStatus(ctx, repoFilter)
+		if err == nil {
+			out, rerr := renderStatus(format, data, cfg)
+			if rerr == nil {
+				fmt.Print("\x1b[H\x1b[2J" + out + "\n")
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+		}
+	}
+}
+
 // collectStatus reads every active worktree (across all repos) and
 // derives its bucket. Reads the store directly — no daemon round-trip
 // — so the widget keeps working while the daemon is restarting.
-func collectStatus(ctx context.Context) (statusData, error) {
+func collectStatus(ctx context.Context, repoFilter string) (statusData, error) {
 	dbPath, err := store.DefaultDBPath()
 	if err != nil {
 		return statusData{}, err
@@ -135,11 +184,18 @@ func collectStatus(ctx context.Context) (statusData, error) {
 	}
 	defer func() { _ = st.Close() }()
 
-	rows, err := st.DB.QueryContext(ctx, `
+	query := `
 		SELECT w.id, COALESCE(w.slug,''), COALESCE(w.branch,'-'), w.path, w.is_main, r.path
 		FROM worktrees w JOIN repos r ON r.id = w.repo_id
-		WHERE w.deleted_at IS NULL
-		ORDER BY r.path, w.is_main DESC, w.branch`)
+		WHERE w.deleted_at IS NULL`
+	args := []any{}
+	if repoFilter != "" {
+		query += ` AND r.path = ? COLLATE NOCASE`
+		args = append(args, repoFilter)
+	}
+	query += `
+		ORDER BY r.path, w.is_main DESC, w.branch`
+	rows, err := st.DB.QueryContext(ctx, query, args...)
 	if err != nil {
 		return statusData{}, err
 	}
