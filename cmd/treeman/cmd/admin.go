@@ -16,12 +16,12 @@ import (
 
 	"github.com/stubbedev/treeman/internal/config"
 	"github.com/stubbedev/treeman/internal/resolve"
-	"github.com/stubbedev/treeman/pkg/rpc"
 	"github.com/stubbedev/treeman/internal/snapshot"
 	"github.com/stubbedev/treeman/internal/store"
 	"github.com/stubbedev/treeman/internal/ui"
 	"github.com/stubbedev/treeman/internal/wtreg"
 	"github.com/stubbedev/treeman/internal/yamlpatch"
+	"github.com/stubbedev/treeman/pkg/rpc"
 )
 
 // RegistryCmd — `treeman registry {repair, remove}` exposes the

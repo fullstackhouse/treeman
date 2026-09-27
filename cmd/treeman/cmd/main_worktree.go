@@ -10,10 +10,10 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/stubbedev/treeman/internal/resolve"
-	"github.com/stubbedev/treeman/pkg/rpc"
 	"github.com/stubbedev/treeman/internal/store"
 	"github.com/stubbedev/treeman/internal/ui"
 	"github.com/stubbedev/treeman/internal/yamlpatch"
+	"github.com/stubbedev/treeman/pkg/rpc"
 )
 
 // MainCmd — `treeman main` subcommands flip the repo's main worktree

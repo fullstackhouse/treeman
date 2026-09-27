@@ -20,11 +20,11 @@ import (
 	"github.com/stubbedev/treeman/internal/gitenv"
 	"github.com/stubbedev/treeman/internal/prepare"
 	"github.com/stubbedev/treeman/internal/resolve"
-	"github.com/stubbedev/treeman/pkg/rpc"
 	"github.com/stubbedev/treeman/internal/store"
 	"github.com/stubbedev/treeman/internal/tui"
 	"github.com/stubbedev/treeman/internal/ui"
 	"github.com/stubbedev/treeman/internal/wt"
+	"github.com/stubbedev/treeman/pkg/rpc"
 )
 
 // WorktreeCmd — `treeman worktree {create,delete,register,unregister,list,finalize}`.
@@ -301,13 +301,15 @@ func wtCreate() *cli.Command {
 		Usage:     "create a worktree end-to-end",
 		ArgsUsage: "<branch>",
 		Description: `Creates a linked worktree, patches the env files, registers it
-in SQLite, then dispatches setup hooks + prepare to the daemon. The
-CLI always returns immediately — follow progress with
-'treeman logs tail --follow'.
+in SQLite, then dispatches setup hooks + prepare to the daemon.
+Default is dispatch-and-return; --foreground subscribes to the run's
+events and blocks until finalize completes (its live progress lines
+are plain text on stderr, machine-parseable when piped).
 
 Examples:
   treeman worktree create PROJ-1234
   treeman worktree create feature/x --from origin/develop
+  treeman worktree create feature/x --foreground   # block until ready
   cd "$(treeman worktree create feat --print-path)"`,
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "from", Usage: "base branch"},
@@ -328,6 +330,11 @@ Examples:
 			&cli.BoolFlag{
 				Name:  "print-path",
 				Usage: "print only the new worktree path on stdout; status lines redirect to stderr (enables `cd \"$(treeman worktree create …)\"`)",
+			},
+			&cli.BoolFlag{
+				Name:    "foreground",
+				Aliases: []string{"wait", "f"},
+				Usage:   "stream live progress and block until finalize completes (default: dispatch and return)",
 			},
 		},
 		Action: func(ctx context.Context, c *cli.Command) error {
@@ -374,6 +381,27 @@ Examples:
 				task.Params[rpc.ParamSkipPrepare] = "1"
 			}
 			payload, err := resultPayload(ctx, task)
+			if c.Bool("foreground") {
+				// Stream the run's events (subscribe before dispatch,
+				// daemon-less in-process fallback) — plain step lines,
+				// green ready line on success, non-zero on failure.
+				if ferr := foregroundTask(ctx, task, "worktree create"); ferr != nil {
+					return ferr
+				}
+				path, lok := wt.LookupWorktree(ctx, repoRoot, branch, cliSink{})
+				if !lok {
+					if task.Params[rpc.ParamPath] != "" {
+						path = task.Params[rpc.ParamPath]
+					} else {
+						return errors.New("create finished but the worktree row is not visible yet — check `worktree list`")
+					}
+				}
+				ui.Success("ready: %s", path)
+				if printPathOnly {
+					_, _ = fmt.Fprintln(os.Stdout, path)
+				}
+				return nil
+			}
 			if err != nil {
 				return err
 			}
@@ -428,9 +456,10 @@ func wtDelete() *cli.Command {
 		ArgsUsage: "[path-or-branch...]",
 		Description: `Runs teardown hooks + DB teardown + git worktree remove, then
 removes the registry row. The teardown is dispatched to the daemon
-over the RPC socket — the CLI returns immediately. If the daemon
-can't be reached (even after autostart), the teardown runs
-in-process instead (blocks until done).
+over the RPC socket — the CLI returns immediately. --foreground
+instead blocks until the teardown's worktree:delete:end event lands
+(live spinner on a TTY). If the daemon can't be reached (even after
+autostart), the teardown runs in-process instead (blocks until done).
 
 Several targets may be given, and the no-argument picker is a
 Tab-toggle multi-select — both delete every named worktree in one
@@ -438,12 +467,17 @@ invocation.
 
 Examples:
   treeman worktree delete PROJ-1234
+  treeman worktree delete PROJ-1234 --foreground   # block until dropped
   treeman worktree delete PROJ-1234 PROJ-5678       # several at once
   treeman worktree delete /path/to/wt --force      # remove stale registry entry`,
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "repo", Aliases: []string{"r"}},
 			&cli.BoolFlag{Name: "force", Aliases: []string{"f"}},
 			&cli.BoolFlag{Name: "yes", Aliases: []string{"y"}, Usage: "skip the confirmation prompt"},
+			&cli.BoolFlag{
+				Name:  "foreground",
+				Usage: "block until the daemon's teardown completes (worktree:delete:end); -f stays force, as in git",
+			},
 			&cli.BoolFlag{
 				Name:  "dry-run",
 				Usage: "resolve the target + print the git state and the per-engine drop plan; change nothing, connect nowhere",
@@ -639,6 +673,12 @@ func deleteWorktreeTarget(ctx context.Context, c *cli.Command, repoRoot, target 
 			wtPath, filepath.Base(wtPath))
 	}
 
+	// --foreground: anchor a teardown poll BEFORE dispatch (the row may
+	// be marked deleted mid-teardown), then block on worktree:delete:end.
+	if c.Bool("foreground") {
+		return deleteForeground(ctx, c, repoRoot, target, wtPath)
+	}
+
 	_, err := wt.Delete(ctx, wt.DeleteRequest{
 		RepoRoot: repoRoot,
 		Target:   target,
@@ -647,6 +687,121 @@ func deleteWorktreeTarget(ctx context.Context, c *cli.Command, repoRoot, target 
 		Detached: c.Bool("detached"),
 	}, cliSink{})
 	return err
+}
+
+// deleteForeground implements `wt delete --foreground` (#50): dispatch
+// the teardown, then block until the daemon emits worktree:delete:end
+// for the row (or the in-process teardown already finished before the
+// poll started — the pre-dispatch anchor sees the terminal event
+// either way).
+func deleteForeground(ctx context.Context, c *cli.Command, repoRoot, target, wtPath string) error {
+	st, closer, err := openLogStore(ctx)
+	if err != nil {
+		return err
+	}
+	defer closer()
+	repoID := resolveShowRepoID(ctx, st, c.String("repo"))
+	row, err := worktreeRowByPath(ctx, st, repoID, wtPath)
+	if err != nil {
+		return fmt.Errorf("resolve %s: %w", wtPath, err)
+	}
+	anchor := time.Now().UnixMilli()
+
+	res, err := wt.Delete(ctx, wt.DeleteRequest{
+		RepoRoot: repoRoot,
+		Target:   target,
+		Force:    c.Bool("force"),
+		Env:      CaptureInheritedEnv(),
+		Detached: c.Bool("detached"),
+	}, cliSink{})
+	if err != nil {
+		return err
+	}
+	if res.Status == wt.DeleteInline {
+		// The in-process teardown already completed synchronously.
+		ui.Success("torn down: %s", wtPath)
+		return nil
+	}
+	return pollTeardown(ctx, st, row, anchor, time.Now().Add(10*time.Minute))
+}
+
+// worktreeRowByPath resolves the live registry row for an exact path —
+// the delete foreground-wait's anchor (name-based lookups don't match
+// full paths).
+func worktreeRowByPath(ctx context.Context, st *store.Store, repoID int64, wtPath string) (worktreeRow, error) {
+	var row worktreeRow
+	err := st.DB.QueryRowContext(ctx, `
+		SELECT w.id, w.slug, COALESCE(w.branch,''), w.path
+		FROM worktrees w
+		WHERE w.repo_id = ? AND w.path = ? COLLATE NOCASE AND w.deleted_at IS NULL`,
+		repoID, wtPath).Scan(&row.ID, &row.Slug, &row.Branch, &row.Path)
+	if err != nil {
+		return row, fmt.Errorf("no live worktree row matches %q (try `treeman worktree list`)", wtPath)
+	}
+	return row, nil
+}
+
+// pollTeardown blocks until the daemon emits worktree:delete:end or
+// worktree:delete:error for the row anchored at `anchor` — the delete
+// twin of pollFinalize. A spinner with elapsed/last-progress renders on
+// a TTY; piped stderr stays silent.
+func pollTeardown(ctx context.Context, st *store.Store, row worktreeRow, anchor int64, deadline time.Time) error {
+	started := time.Now()
+	spinner := ui.IsStderrTTY()
+	frame := 0
+	tick := time.NewTicker(500 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			if spinner {
+				ui.EraseLine()
+			}
+			return ctx.Err()
+		case <-tick.C:
+		}
+		rows, err := st.QueryEvents(ctx, store.EventFilter{
+			WorktreeID:  row.ID,
+			EventTypes:  []string{store.EvtWorktreeDeleteEnd, store.EvtWorktreeDeleteError},
+			SinceMs:     anchor,
+			OldestFirst: true,
+			Limit:       50,
+		})
+		if err != nil {
+			if spinner {
+				ui.EraseLine()
+			}
+			return err
+		}
+		for _, e := range rows {
+			if spinner {
+				ui.EraseLine()
+			}
+			switch e.EventType {
+			case store.EvtWorktreeDeleteEnd:
+				ui.Success("torn down: %s", row.Path)
+				return nil
+			case store.EvtWorktreeDeleteError:
+				if e.Level == store.LevelError {
+					return fmt.Errorf("teardown failed: %s", e.Message)
+				}
+			}
+		}
+		if time.Now().After(deadline) {
+			if spinner {
+				ui.EraseLine()
+			}
+			return fmt.Errorf("timed out waiting for teardown of %s", row.Path)
+		}
+		if spinner {
+			line := fmt.Sprintf("%s waiting for teardown on %s — elapsed %s",
+				ui.Cyan(ui.SpinnerFrames[frame%len(ui.SpinnerFrames)]),
+				row.Slug, time.Since(started).Round(time.Second))
+			ui.EraseLine()
+			_, _ = fmt.Fprint(ui.Err, ui.Dim(ui.Truncate(line, ui.TermWidth())))
+			frame++
+		}
+	}
 }
 
 // previewDelete implements `wt delete --dry-run` (#60): the resolved

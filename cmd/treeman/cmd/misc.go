@@ -25,7 +25,6 @@ import (
 	"github.com/stubbedev/treeman/internal/migrations/testfw"
 	"github.com/stubbedev/treeman/internal/prepare"
 	"github.com/stubbedev/treeman/internal/resolve"
-	"github.com/stubbedev/treeman/pkg/rpc"
 	"github.com/stubbedev/treeman/internal/runid"
 	"github.com/stubbedev/treeman/internal/schema"
 	"github.com/stubbedev/treeman/internal/slug"
@@ -34,6 +33,7 @@ import (
 	"github.com/stubbedev/treeman/internal/ui"
 	wt2 "github.com/stubbedev/treeman/internal/wt"
 	"github.com/stubbedev/treeman/internal/yamlpatch"
+	"github.com/stubbedev/treeman/pkg/rpc"
 )
 
 // PrepareCmd — `treeman prepare` runs the full pipeline foreground.
