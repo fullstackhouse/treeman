@@ -1006,55 +1006,8 @@ func wtList() *cli.Command {
 			}
 			defer func() { _ = st.Close() }()
 
-			var (
-				args []any
-				// Tearing-down worktrees are excluded in SQL: the daemon
-				// writes delete:start the instant teardown begins but only
-				// flips deleted_at when the final git-remove lands, so
-				// without the predicate a tearing-down worktree lingers in
-				// the list for the whole DB-drop + hooks window.
-				// Self-healing: a failed teardown lands delete:error and
-				// the worktree reappears.
-				where   = "w.deleted_at IS NULL AND " + store.WorktreeNotTearingDown
-				orderBy string
-			)
-			if r := c.String("repo"); r != "" {
-				repoID, _ := st.LookupRepoID(ctx, MustAbs(r))
-				if repoID == 0 {
-					return fmt.Errorf("no repo registered at %s", r)
-				}
-				where += " AND w.repo_id = ?"
-				args = append(args, repoID)
-			}
-			switch c.String("sort") {
-			case "visited":
-				orderBy = "ORDER BY IFNULL(w.last_visited_at, 0) DESC, w.id"
-			case "mtime", "id", "":
-				orderBy = "ORDER BY w.id"
-			default:
-				return fmt.Errorf("unknown --sort %q (id|mtime|visited)", c.String("sort"))
-			}
-			//nolint:gosec // where/orderBy are fixed fragments; values are parameterized via args
-			q := `SELECT w.id, w.slug, COALESCE(w.branch,'-'), w.path, COALESCE(w.last_visited_at, 0), w.is_main, r.path
-				FROM worktrees w JOIN repos r ON r.id = w.repo_id WHERE ` + where + ` ` + orderBy
-			rows, err := st.DB.QueryContext(ctx, q, args...)
+			all, err := loadWtRows(ctx, st, c.String("repo"), c.String("sort"))
 			if err != nil {
-				return err
-			}
-			defer func() { _ = rows.Close() }()
-			var all []wtRow
-			anyMain := false
-			for rows.Next() {
-				var r wtRow
-				if err := rows.Scan(&r.ID, &r.Slug, &r.Branch, &r.Path, &r.VisitedTs, &r.IsMain, &r.RepoPath); err != nil {
-					return err
-				}
-				if r.IsMain {
-					anyMain = true
-				}
-				all = append(all, r)
-			}
-			if err := rows.Err(); err != nil {
 				return err
 			}
 
@@ -1078,10 +1031,64 @@ func wtList() *cli.Command {
 				return nil
 			}
 
+			anyMain := false
+			for _, r := range all {
+				if r.IsMain {
+					anyMain = true
+				}
+			}
 			renderWtTable(all, anyMain, withStatus, withState, withSize)
 			return nil
 		},
 	}
+}
+
+// loadWtRows queries the active-worktree rows the list table (and the
+// `tui` dashboard) render. Tearing-down worktrees are excluded in SQL:
+// the daemon writes delete:start the instant teardown begins but only
+// flips deleted_at when the final git-remove lands, so without the
+// predicate a tearing-down worktree lingers in the list for the whole
+// DB-drop + hooks window. Self-healing: a failed teardown lands
+// delete:error and the worktree reappears.
+func loadWtRows(ctx context.Context, st *store.Store, repoFilter, sortMode string) ([]wtRow, error) {
+	var (
+		args    []any
+		where   = "w.deleted_at IS NULL AND " + store.WorktreeNotTearingDown
+		orderBy string
+	)
+	if repoFilter != "" {
+		repoID, _ := st.LookupRepoID(ctx, MustAbs(repoFilter))
+		if repoID == 0 {
+			return nil, fmt.Errorf("no repo registered at %s", repoFilter)
+		}
+		where += " AND w.repo_id = ?"
+		args = append(args, repoID)
+	}
+	switch sortMode {
+	case "visited":
+		orderBy = "ORDER BY IFNULL(w.last_visited_at, 0) DESC, w.id"
+	case "mtime", "id", "":
+		orderBy = "ORDER BY w.id"
+	default:
+		return nil, fmt.Errorf("unknown --sort %q (id|mtime|visited)", sortMode)
+	}
+	//nolint:gosec // where/orderBy are fixed fragments; values are parameterized via args
+	q := `SELECT w.id, w.slug, COALESCE(w.branch,'-'), w.path, COALESCE(w.last_visited_at, 0), w.is_main, r.path
+		FROM worktrees w JOIN repos r ON r.id = w.repo_id WHERE ` + where + ` ` + orderBy
+	rows, err := st.DB.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var all []wtRow
+	for rows.Next() {
+		var r wtRow
+		if err := rows.Scan(&r.ID, &r.Slug, &r.Branch, &r.Path, &r.VisitedTs, &r.IsMain, &r.RepoPath); err != nil {
+			return nil, err
+		}
+		all = append(all, r)
+	}
+	return all, rows.Err()
 }
 
 // enrichAndSortWtRows fills the optional columns requested by the

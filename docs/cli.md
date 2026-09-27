@@ -981,6 +981,10 @@ the opt-in. Use --backend to probe a specific sender.
 |---|---|
 | `-b`, `--backend` | auto \| notify-send \| osascript \| none (default: notifications.backend, else auto) |
 
+### `treeman tui`
+
+full-screen dashboard: worktrees + live daemon events (needs a TTY)
+
 
 ## Shell integration
 

@@ -78,6 +78,7 @@ func New() *cli.Command {
 			cmd.MCPCmd(),
 			cmd.NotifyCmd(),
 			cmd.PatchFilterCmd(),
+			cmd.TuiCmd(),
 		},
 	}
 }
