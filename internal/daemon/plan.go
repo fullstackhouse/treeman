@@ -459,7 +459,7 @@ func runTaskWorktreeUnregister(ctx context.Context, st *State, task rpc.Task) (j
 	if err := st.Store.MarkWorktreeDeleted(ctx, id); err != nil {
 		return nil, err
 	}
-	return json.Marshal(map[string]any{"worktree_id": id})
+	return json.Marshal(map[string]any{"worktree_id": id, "path": task.WorktreePath})
 }
 
 func runTaskLogsPurge(ctx context.Context, st *State, task rpc.Task) (json.RawMessage, error) {

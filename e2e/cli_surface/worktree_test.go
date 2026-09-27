@@ -290,9 +290,23 @@ func TestWtRegisterUnregister(t *testing.T) {
 	})
 
 	t.Run("unregister marks deleted without touching filesystem", func(t *testing.T) {
-		res := e.run(t, wtPath, "worktree", "unregister")
+		res := e.run(t, wtPath, "worktree", "unregister", "--json")
 		if res.err != nil {
 			t.Fatalf("wt unregister: %v\nstderr:\n%s", res.err, res.stderr)
+		}
+		// The --json surface echoes the resolved row: id + path.
+		var out struct {
+			WorktreeID int64  `json:"worktree_id"`
+			Path       string `json:"path"`
+		}
+		if err := json.Unmarshal([]byte(strings.TrimSpace(res.stdout)), &out); err != nil {
+			t.Fatalf("decode wt unregister --json: %v\nstdout:\n%s", err, res.stdout)
+		}
+		if out.WorktreeID == 0 {
+			t.Errorf("wt unregister --json missing worktree_id:\n%s", res.stdout)
+		}
+		if out.Path != wtPath {
+			t.Errorf("wt unregister --json path = %q, want %q", out.Path, wtPath)
 		}
 		if _, err := os.Stat(wtPath); err != nil {
 			t.Errorf("wt unregister should leave fs alone, but path is gone: %v", err)

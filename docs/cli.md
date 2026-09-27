@@ -75,10 +75,16 @@ register a worktree path (metadata only)
 |---|---|
 | `-b`, `--branch` |  |
 | `-r`, `--repo` |  |
+| `--json` |  |
 
 ### `treeman worktree unregister`
 
 mark a worktree deleted in SQLite without touching git
+
+| Flag | Usage |
+|---|---|
+| `-r`, `--repo` |  |
+| `--json` |  |
 
 ### `treeman worktree list`
 

@@ -418,6 +418,7 @@ func wtRegister() *cli.Command {
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "branch", Aliases: []string{"b"}},
 			&cli.StringFlag{Name: "repo", Aliases: []string{"r"}},
+			&cli.BoolFlag{Name: "json"},
 		},
 		Action: func(ctx context.Context, c *cli.Command) error {
 			path := "."
@@ -433,10 +434,14 @@ func wtRegister() *cli.Command {
 				}
 			}
 			branch := c.String("branch")
-			payload, err := resultPayload(ctx, rpc.Task{
+			task := rpc.Task{
 				Type: rpc.TaskWorktreeRegister, RepoPath: repoRoot, WorktreePath: path,
 				Params: map[string]string{rpc.ParamBranch: branch},
-			})
+			}
+			if c.Bool("json") {
+				return runResultJSON(ctx, task)
+			}
+			payload, err := resultPayload(ctx, task)
 			if err != nil {
 				return err
 			}
@@ -456,14 +461,32 @@ func wtUnregister() *cli.Command {
 	return &cli.Command{
 		Name:  "unregister",
 		Usage: "mark a worktree deleted in SQLite without touching git",
+		Flags: []cli.Flag{
+			&cli.StringFlag{Name: "repo", Aliases: []string{"r"}},
+			&cli.BoolFlag{Name: "json"},
+		},
 		Action: func(ctx context.Context, c *cli.Command) error {
 			path := "."
 			if c.NArg() >= 1 {
 				path = c.Args().First()
 			}
 			path = MustAbs(path)
-			_, err := resultPayload(ctx, rpc.Task{Type: rpc.TaskWorktreeUnregister, WorktreePath: path})
-			return err
+			var repoRoot string
+			if r := c.String("repo"); r != "" {
+				var err error
+				if repoRoot, err = resolveRepo(r); err != nil {
+					return err
+				}
+			}
+			task := rpc.Task{Type: rpc.TaskWorktreeUnregister, RepoPath: repoRoot, WorktreePath: path}
+			if c.Bool("json") {
+				return runResultJSON(ctx, task)
+			}
+			if _, err := resultPayload(ctx, task); err != nil {
+				return err
+			}
+			PrintOK("unregistered %s (git worktree untouched)", path)
+			return nil
 		},
 	}
 }
