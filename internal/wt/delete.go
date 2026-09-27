@@ -149,11 +149,13 @@ func teardownInFlight(ctx context.Context, repoRoot, wtPath string) bool {
 	if err != nil {
 		return false
 	}
-	st, err := store.Open(ctx, dbPath)
+	// Shared handle: this guard runs alongside LookupWorktree et al in
+	// the same invocation, and a shared store is never closed by
+	// helpers (#79).
+	st, err := store.OpenShared(ctx, dbPath)
 	if err != nil {
 		return false
 	}
-	defer func() { _ = st.Close() }()
 	var one int
 	qErr := st.DB.QueryRowContext(ctx, `
 		SELECT 1 FROM worktrees w JOIN repos r ON r.id = w.repo_id
@@ -179,11 +181,12 @@ func inlineTeardown(ctx context.Context, repoRoot, wtPath string, force bool, en
 		return err
 	}
 	dbPath, _ := store.DefaultDBPath()
-	st, err := store.Open(ctx, dbPath)
+	// Shared handle (#79): the same invocation's lookup + guard helpers
+	// already opened it; helpers never close a shared store.
+	st, err := store.OpenShared(ctx, dbPath)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = st.Close() }()
 	repoID, _ := st.EnsureRepo(ctx, repoRoot, filepath.Base(repoRoot))
 	branch := gitenv.DetectBranch(ctx, wtPath)
 	id, err := ResolveIdentity(ctx, st, &cfg, repoRoot, wtPath, branch, repoID)

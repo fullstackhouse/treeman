@@ -163,6 +163,16 @@ func OpenShared(ctx context.Context, path string) (*Store, error) {
 	return st, nil
 }
 
+// SharedHandleCount reports how many process-wide shared handles are
+// cached. Introspection seam for the one-open-per-invocation contract
+// (#79): helpers open via OpenShared and never close, so a whole `wt`
+// invocation should add exactly one entry.
+func SharedHandleCount() int {
+	sharedMu.Lock()
+	defer sharedMu.Unlock()
+	return len(sharedOpen)
+}
+
 // RegisterEventHook installs a callback that fires after every
 // WriteEvent insert (both sync and batched paths). id is a caller-
 // chosen unique key — re-registering the same id replaces the prior
