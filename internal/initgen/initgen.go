@@ -41,6 +41,118 @@ func WriteYAML(cwd string, force bool) (path string, created bool, body string, 
 	return target, !exists, body, nil
 }
 
+// AppendEngines activates a databases: block in an existing scaffold
+// for each requested engine (`treeman init --engine`, #71): the
+// no-framework template leaves the block as a comment, which left
+// users at a dead end. Each engine gets a minimal entry — name
+// template + test clones for name-scoped engines, key prefix for
+// prefix-scoped ones — mirroring what the framework-driven template
+// path emits. Engines whose FAMILY is already present are skipped
+// (idempotent), aliases canonicalise to one family, unknown names are
+// rejected with the known list.
+func AppendEngines(path string, engines []string) error {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(body, &doc); err != nil {
+		return fmt.Errorf("parse %s: %w", path, err)
+	}
+	if len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
+		return fmt.Errorf("%s: not a YAML mapping", path)
+	}
+	root := doc.Content[0]
+
+	name := filepath.Base(mustAbs(filepath.Dir(path)))
+	existing := map[enginepkg.Family]bool{}
+	if seq := mappingValue(root, "databases"); seq != nil && seq.Kind == yaml.SequenceNode {
+		for _, entry := range seq.Content {
+			if v := mappingValue(entry, "engine"); v != nil {
+				if fam, ok := enginepkg.Canonical(v.Value); ok {
+					existing[fam] = true
+				}
+			}
+		}
+	}
+
+	var entries []*yaml.Node
+	seen := map[enginepkg.Family]bool{}
+	for _, eng := range engines {
+		fam, ok := enginepkg.Canonical(eng)
+		if !ok {
+			return fmt.Errorf("unknown engine %q (known: %s)", eng, enginepkg.KnownList())
+		}
+		if existing[fam] || seen[fam] {
+			continue
+		}
+		seen[fam] = true
+		entries = append(entries, engineEntry(name, eng, fam))
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+
+	var merged []*yaml.Node
+	if seq := mappingValue(root, "databases"); seq != nil && seq.Kind == yaml.SequenceNode {
+		merged = append(merged, seq.Content...)
+	}
+	merged = append(merged, entries...)
+	mapSet(root, "databases", seqNode(merged...))
+
+	out, err := yamlpatch.Marshal(&doc)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, out, 0o644)
+}
+
+// engineEntry builds one databases: entry for `engine`. The shape
+// follows the template path in RenderTemplate: name-scoped engines
+// (mysql/postgres/mongo) get a name_template + test_clones;
+// prefix-scoped engines (redis/es/s3) get a key_prefix. Postgres also
+// scaffolds prewarm, the only family with rename-based spare claims.
+func engineEntry(name, engine string, fam enginepkg.Family) *yaml.Node {
+	db := mapNode("engine", scalar(engine))
+	switch fam {
+	case enginepkg.FamilyRedis, enginepkg.FamilyES, enginepkg.FamilyS3:
+		mapSet(db, "key_prefix", scalar(name+"_{slug}:"))
+	default:
+		mapSet(db, "name_template", scalar(name+"_testing_{slug}"))
+		mapSet(db, "test_clones", mapNode(
+			"clones", scalar("auto"),
+			"name_template", scalar(name+"_testing_{slug}_test_{n}"),
+		))
+		if fam == enginepkg.FamilyPostgres {
+			mapSet(db, "prewarm", scalar("2"))
+			mapKeyNode(db, "prewarm").LineComment = "spare clones pre-restored from the template; cache-hit creates claim one via rename (ms)"
+		}
+	}
+	return db
+}
+
+// mappingValue returns the value node for `key` in a mapping node, or
+// nil when absent / not a mapping.
+func mappingValue(m *yaml.Node, key string) *yaml.Node {
+	if m == nil || m.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(m.Content); i += 2 {
+		if m.Content[i].Value == key {
+			return m.Content[i+1]
+		}
+	}
+	return nil
+}
+
+func mustAbs(p string) string {
+	a, err := filepath.Abs(p)
+	if err != nil {
+		return p
+	}
+	return a
+}
+
 // WriteGlobalYAML scaffolds the user-global `config.yaml` at
 // config.GlobalConfigPath(). Returns the target path, whether a new
 // file was created, and the body. Refuses to clobber an existing file

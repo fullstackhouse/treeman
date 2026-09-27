@@ -29,6 +29,7 @@ import (
 	"github.com/stubbedev/treeman/internal/schema"
 	"github.com/stubbedev/treeman/internal/slug"
 	"github.com/stubbedev/treeman/internal/store"
+	"github.com/stubbedev/treeman/internal/tui"
 	"github.com/stubbedev/treeman/internal/ui"
 	wt2 "github.com/stubbedev/treeman/internal/wt"
 	"github.com/stubbedev/treeman/internal/yamlpatch"
@@ -1403,50 +1404,156 @@ func InitCmd() *cli.Command {
 				Name:  "global",
 				Usage: "scaffold the user-global ~/.config/treeman/config.yaml (machine-wide defaults) instead of a per-repo .treeman.yaml",
 			},
+			&cli.StringFlag{
+				Name:  "engine",
+				Usage: "comma-separated engines to activate in databases: (e.g. mysql,postgres,redis) — emits minimal blocks when detection found no framework",
+			},
+			&cli.BoolFlag{
+				Name:  "interactive",
+				Usage: "pick engines from a terminal picker instead of --engine (declines gracefully when stdin is not a TTY)",
+			},
 		},
 		Action: func(ctx context.Context, c *cli.Command) error {
 			if c.Bool("global") {
 				return initGlobalAction(c)
 			}
-			cwd, _ := os.Getwd()
-			detected := framework.DefaultRegistry().DetectAll(cwd)
-			target, created, body, err := InitTreemanYAML(cwd, c.Bool("force"))
-			if err != nil {
-				return err
-			}
-			if c.Bool("json") {
-				names := make([]string, 0, len(detected))
-				for _, s := range detected {
-					names = append(names, s.Name)
-				}
-				return jsonStream(map[string]any{
-					"path":     target,
-					"created":  created,
-					"bytes":    len(body),
-					"detected": names,
-				})
-			}
-			if len(detected) > 0 {
-				names := make([]string, 0, len(detected))
-				for _, s := range detected {
-					names = append(names, s.Name)
-				}
-				PrintInfo("detected: %s", strings.Join(names, ", "))
-			} else {
-				PrintWarn("no migration framework detected — the databases: block was left commented out")
-				PrintHint("see `treeman fw list` for built-in presets, or author databases: by hand")
-			}
-			PrintOK("wrote %s", target)
-			PrintHint("review the generated databases:/hooks: blocks before first create")
-			if !daemonAutoStartInstalled() {
-				PrintHint("install the daemon (one-time): treeman daemon install")
-			}
-			PrintHint("create a worktree:               treeman worktree create <branch>")
-			PrintHint("install JSON Schema (editors):   treeman schema install")
-			PrintHint("shell completions (one-time):    source <(treeman completion zsh)  # or bash/fish/pwsh")
-			return nil
+			return initRepoAction(c)
 		},
 	}
+}
+
+// initRepoAction scaffolds .treeman.yaml for the repo rooted at cwd:
+// detection-driven template, optional --engine/--interactive databases
+// activation, immediate load-validation, and the first-run hints.
+func initRepoAction(c *cli.Command) error {
+	cwd, _ := os.Getwd()
+	detected := framework.DefaultRegistry().DetectAll(cwd)
+	engines := enginesForScaffold(c)
+	if c.Bool("interactive") && len(engines) == 0 && !tui.Interactive() {
+		// A non-interactive --interactive (CI, piped stdin) must
+		// not wedge on the picker: degrade to the plain scaffold.
+		PrintWarn("--interactive needs a terminal — scaffolding without engine selection")
+	}
+	if c.Bool("interactive") && tui.Interactive() && len(engines) == 0 {
+		var err error
+		if engines, err = pickEngines(); err != nil {
+			return err
+		}
+	}
+	target, created, body, err := InitTreemanYAML(cwd, c.Bool("force"))
+	if err != nil {
+		return err
+	}
+	if len(engines) > 0 {
+		if err := initgen.AppendEngines(target, engines); err != nil {
+			return err
+		}
+		if body, err = readFileString(target); err != nil {
+			return err
+		}
+	}
+	if c.Bool("json") {
+		names := make([]string, 0, len(detected))
+		for _, s := range detected {
+			names = append(names, s.Name)
+		}
+		return jsonStream(map[string]any{
+			"path":     target,
+			"created":  created,
+			"bytes":    len(body),
+			"detected": names,
+			"engines":  engines,
+		})
+	}
+	printInitSummary(detected, engines)
+	PrintOK("wrote %s", target)
+	PrintHint("review the generated databases:/hooks: blocks before first create")
+	// First-run guard (#71): the scaffold must load. A failure
+	// here is a template regression — surface it now instead of
+	// at the user's first `worktree create`.
+	if _, err := resolve.LoadResolved(cwd); err != nil {
+		return fmt.Errorf("the scaffolded config does not load (report this): %w", err)
+	}
+	if !daemonAutoStartInstalled() {
+		PrintHint("install the daemon (one-time): treeman daemon install")
+	}
+	PrintHint("create a worktree:               treeman worktree create <branch>")
+	PrintHint("install JSON Schema (editors):   treeman schema install")
+	PrintHint("shell completions (one-time):    source <(treeman completion zsh)  # or bash/fish/pwsh")
+	return nil
+}
+
+// printInitSummary reports what detection + engine activation decided.
+func printInitSummary(detected []framework.Spec, engines []string) {
+	switch {
+	case len(detected) > 0:
+		names := make([]string, 0, len(detected))
+		for _, s := range detected {
+			names = append(names, s.Name)
+		}
+		PrintInfo("detected: %s", strings.Join(names, ", "))
+	case len(engines) > 0:
+		PrintInfo("activated databases: for %s (--engine)", strings.Join(engines, ", "))
+	default:
+		PrintWarn("no migration framework detected — the databases: block was left commented out")
+		PrintHint("activate one non-interactively:  treeman init --force --engine mysql,postgres")
+		PrintHint("or pick from a picker:            treeman init --force --interactive")
+	}
+}
+
+// enginesForScaffold parses --engine (comma-separated, trimmed).
+func enginesForScaffold(c *cli.Command) []string {
+	raw := c.String("engine")
+	if raw == "" {
+		return nil
+	}
+	var engines []string
+	for eng := range strings.SplitSeq(raw, ",") {
+		eng = strings.TrimSpace(eng)
+		if eng != "" {
+			engines = append(engines, eng)
+		}
+	}
+	return engines
+}
+
+// pickEngines runs the terminal multi-select over the engine families
+// treeman can scaffold. Empty selection = "leave databases commented".
+func pickEngines() ([]string, error) {
+	items := []string{
+		"mysql      — MySQL / MariaDB / TiDB",
+		"postgres   — PostgreSQL",
+		"mongodb    — MongoDB",
+		"redis      — Redis / Valkey / Dragonfly",
+		"elasticsearch — Elasticsearch / OpenSearch",
+	}
+	values := []string{"mysql", "postgres", "mongodb", "redis", "elasticsearch"}
+	res, err := tui.Select(items, tui.Options{
+		Prompt: "engines to activate in databases: (space marks, enter confirms, esc = none)",
+		Values: values,
+		Multi:  true,
+	})
+	switch {
+	case errors.Is(err, tui.ErrAborted), errors.Is(err, tui.ErrCanceled):
+		return nil, nil
+	case err != nil:
+		return nil, err
+	}
+	var engines []string
+	for _, idx := range res.Indices {
+		if idx >= 0 && idx < len(values) {
+			engines = append(engines, values[idx])
+		}
+	}
+	return engines, nil
+}
+
+func readFileString(path string) (string, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
 }
 
 // InitTreemanYAML is a thin shim over initgen.WriteYAML kept so

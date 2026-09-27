@@ -558,6 +558,53 @@ func TestWtSwitchConsolidatedIntoGo(t *testing.T) {
 	})
 }
 
+// TestInitEngineAndInteractive pins the #71 acceptance criteria:
+// `init --engine postgres` produces a config where `config validate`
+// passes with an active databases: block, and `init --interactive`
+// completes non-interactively (declines the picker) when stdin is not
+// a TTY.
+func TestInitEngineAndInteractive(t *testing.T) {
+	t.Run("--engine activates a valid databases block", func(t *testing.T) {
+		repo := newGitRepo(t)
+		e := newEnv(t)
+		res := e.run(t, repo, "init", "--engine", "postgres,redis")
+		if res.err != nil {
+			t.Fatalf("init --engine: %v\nstderr:\n%s", res.err, res.stderr)
+		}
+		validate := e.run(t, repo, "config", "validate")
+		if validate.err != nil {
+			t.Fatalf("config validate after init --engine: %v\nstdout:\n%s\nstderr:\n%s",
+				validate.err, validate.stdout, validate.stderr)
+		}
+		body, err := os.ReadFile(filepath.Join(repo, ".treeman.yaml"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(body)
+		for _, want := range []string{"engine: postgres", "engine: redis", "key_prefix"} {
+			if !strings.Contains(text, want) {
+				t.Errorf("scaffold missing %q:\n%s", want, text)
+			}
+		}
+	})
+
+	t.Run("--interactive declines without a TTY and still scaffolds", func(t *testing.T) {
+		repo := newGitRepo(t)
+		e := newEnv(t)
+		res := e.run(t, repo, "init", "--interactive")
+		if res.err != nil {
+			t.Fatalf("init --interactive non-TTY: %v\nstderr:\n%s", res.err, res.stderr)
+		}
+		combined := res.stdout + res.stderr
+		if !strings.Contains(combined, "needs a terminal") {
+			t.Errorf("non-TTY --interactive should say so:\n%s", combined)
+		}
+		if _, err := os.Stat(filepath.Join(repo, ".treeman.yaml")); err != nil {
+			t.Errorf("scaffold should still be written: %v", err)
+		}
+	})
+}
+
 // TestRequireDaemonStrictMode pins the strict-daemon contract (#75):
 // with --require-daemon (or TREEMAN_REQUIRE_DAEMON=1) and no daemon,
 // submitPlan-backed commands fail fast naming `treeman daemon start`

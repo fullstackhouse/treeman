@@ -295,3 +295,43 @@ func TestDetectJSPkgMgrPrecedence(t *testing.T) {
 		t.Errorf("detectJSPkgMgr = %q, want pnpm", got)
 	}
 }
+
+// TestAppendEngines pins the `init --engine` block builder (#71):
+// minimal valid entries per family, family-level idempotence, alias
+// canonicalisation, and rejection of unknown engines.
+func TestAppendEngines(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".treeman.yaml")
+	if err := os.WriteFile(path, []byte("worktrees:\n    root: .worktrees\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := AppendEngines(path, []string{"postgres", "postgresql", "redis"}); err != nil {
+		t.Fatalf("AppendEngines: %v", err)
+	}
+	body, _ := os.ReadFile(path)
+	text := string(body)
+	for _, want := range []string{"engine: postgres", "engine: redis", "name_template", "key_prefix", "prewarm"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("scaffold missing %q:\n%s", want, text)
+		}
+	}
+	// postgres + its alias must collapse to ONE entry.
+	if strings.Count(text, "engine: postgres") != 1 {
+		t.Errorf("postgres alias should canonicalise to one entry:\n%s", text)
+	}
+
+	// Idempotent: re-appending changes nothing.
+	before, _ := os.ReadFile(path)
+	if err := AppendEngines(path, []string{"postgres", "valkey"}); err != nil {
+		t.Fatalf("re-append: %v", err)
+	}
+	after, _ := os.ReadFile(path)
+	if string(before) != string(after) {
+		t.Errorf("re-append should be a no-op:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+
+	// Unknown engines are rejected with the known list.
+	if err := AppendEngines(path, []string{"oracle"}); err == nil || !strings.Contains(err.Error(), "oracle") {
+		t.Errorf("unknown engine should be rejected, got %v", err)
+	}
+}
