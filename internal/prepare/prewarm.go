@@ -6,7 +6,10 @@ import (
 	"log/slog"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
+
+	"golang.org/x/sync/errgroup"
 
 	"github.com/stubbedev/treeman/internal/config"
 	dbpostgres "github.com/stubbedev/treeman/internal/db/postgres"
@@ -140,18 +143,32 @@ func spawnPrewarm(
 			return
 		}
 
-		created := 0
+		created := atomic.Int64{}
+		// Missing slots are restored concurrently: each restore is a full
+		// CREATE DATABASE … TEMPLATE block copy, so serial top-up after a
+		// burst made the tail of the burst wait n x copy (the exact cost
+		// the pool exists to avoid). Slot names are distinct so restores
+		// can't collide; the cap keeps us from piling copy load onto the
+		// server beyond a small multiple of what a create burst needs.
+		restoreLimit := int(min(n, 4))
+		g, gctx := errgroup.WithContext(ctx)
+		g.SetLimit(restoreLimit)
 		for slot := 1; slot <= int(n); slot++ {
 			name := snapshot.SpareName(templateName, slot)
 			if exists, _ := drv.DatabaseExists(ctx, name); exists {
 				continue
 			}
-			if err := drv.SnapshotRestore(ctx, templateName, name); err != nil {
-				slog.Warn("prewarm restore", "spare", name, "template", templateName, "err", err)
-				return
-			}
-			created++
+			g.Go(func() error {
+				if err := drv.SnapshotRestore(gctx, templateName, name); err != nil {
+					slog.Warn("prewarm restore", "spare", name, "template", templateName, "err", err)
+					return err
+				}
+				created.Add(1)
+				return nil
+			})
 		}
+		_ = g.Wait()
+		createdN := int(created.Load())
 
 		// Reap slots beyond n so shrinking `prewarm` in config actually
 		// shrinks the pool instead of leaving zombie spares around until
@@ -166,13 +183,13 @@ func spawnPrewarm(
 			}
 		}
 
-		if created > 0 {
+		if createdN > 0 {
 			_ = st.WriteEvent(ctx, store.LevelInfo, store.EvtSnapshotsPrewarm,
-				fmt.Sprintf("pre-warmed %d spare(s) for %s", created, templateName),
+				fmt.Sprintf("pre-warmed %d spare(s) for %s", createdN, templateName),
 				repoID, worktreeID, "", 0, map[string]string{
 					"engine":   "postgres",
 					"template": templateName,
-					"created":  strconv.Itoa(created),
+					"created":  strconv.Itoa(createdN),
 					"pool":     strconv.Itoa(int(n)),
 				})
 		}
