@@ -31,6 +31,7 @@ import (
 	"github.com/stubbedev/treeman/internal/store"
 	"github.com/stubbedev/treeman/internal/ui"
 	wt2 "github.com/stubbedev/treeman/internal/wt"
+	"github.com/stubbedev/treeman/internal/yamlpatch"
 )
 
 // PrepareCmd — `treeman prepare` runs the full pipeline foreground.
@@ -603,10 +604,99 @@ func ConfigCmd() *cli.Command {
 				},
 			},
 			configSet(),
+			configUnset(),
 			configHistory(),
 			configRestore(),
 		},
 	}
+}
+
+// configUnset returns `treeman config unset <path>` — the YAML twin
+// of `config set` for removal. Deletes the key or sequence element
+// via yamlpatch.Unset (comments + sibling order preserved), then
+// persists through the same scope resolution + daemon snapshot +
+// reload as set, so an unpatch lands in `config history` like any
+// other write.
+func configUnset() *cli.Command {
+	return &cli.Command{
+		Name:      "unset",
+		Usage:     "remove a key or sequence element from the config by dotted path (comments preserved, prior content lands in history)",
+		ArgsUsage: "<path>",
+		Description: `Examples:
+  treeman config unset worktrees.links
+  treeman config unset patches[0]
+  treeman config unset --global daemon.log_level`,
+		Flags: []cli.Flag{
+			&cli.StringFlag{Name: "repo", Aliases: []string{"r"}},
+			&cli.BoolFlag{Name: "json"},
+			&cli.BoolFlag{Name: "global", Usage: "edit the user-global ~/.config/treeman/config.yaml instead of .treeman.yaml"},
+		},
+		Action: func(ctx context.Context, c *cli.Command) error {
+			if c.NArg() < 1 {
+				return errors.New("usage: treeman config unset <path>")
+			}
+			path := c.Args().Get(0)
+			p, histRoot, layer, err := resolveConfigScope(c.String("repo"), c.Bool("global"))
+			if err != nil {
+				return err
+			}
+			body, removed, err := applyConfigUnset(p, layer, path)
+			if err != nil {
+				return err
+			}
+			if err := persistConfigBody(ctx, histRoot, p, body, layer == "global"); err != nil {
+				return err
+			}
+			if c.Bool("json") {
+				return jsonStream(map[string]any{
+					"repo":    histRoot,
+					"file":    p,
+					"scope":   layer,
+					"unset":   path,
+					"removed": removed,
+				})
+			}
+			PrintOK("unset %s (prior content in %s history)", path, layer)
+			return nil
+		},
+	}
+}
+
+// applyConfigUnset deletes the key/element at the dotted path and
+// returns the new file body plus the removed value rendered as JSON
+// ("" when nothing was there). Shares applyConfigSet's read / parse /
+// scope-check / validate plumbing; only the patch op differs.
+func applyConfigUnset(p, layer, path string) (body []byte, removed string, err error) {
+	raw, err := os.ReadFile(p)
+	if err != nil {
+		return nil, "", fmt.Errorf("read %s: %w", p, err)
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		return nil, "", fmt.Errorf("parse %s: %w", p, err)
+	}
+	segs, err := yamlpatch.ParsePath(path)
+	if err != nil {
+		return nil, "", err
+	}
+	if len(segs) > 0 && segs[0].Key != "" {
+		if err := config.CheckKeyInLayer(segs[0].Key, layer); err != nil {
+			return nil, "", err
+		}
+	}
+	prev, err := yamlpatch.Unset(&doc, segs)
+	if err != nil {
+		return nil, "", err
+	}
+	body, err = yamlpatch.Marshal(&doc)
+	if err != nil {
+		return nil, "", fmt.Errorf("encode yaml: %w", err)
+	}
+	var validated config.Config
+	if err := yaml.Unmarshal(body, &validated); err != nil {
+		return nil, "", fmt.Errorf("validation failed — patched file would not parse as config.Config: %w", err)
+	}
+	return body, decodePrevJSON(prev), nil
 }
 
 // configHistory returns `treeman config history` — lists the per-repo

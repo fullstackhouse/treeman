@@ -140,6 +140,74 @@ func TestConfigSet(t *testing.T) {
 // PRIOR content as a per-repo generation in SQLite (newest-first) and
 // that NO `.treeman.yaml.bak.*` files are left in the project root — the
 // backups now live in the DB, not beside the file.
+// TestConfigUnsetFlow exercises `config unset`: a sequence element is
+// removed with sibling comments preserved, the removal lands in the
+// generation history, an already-missing key errors, and a repo-layer
+// key is rejected under --global with the layer message.
+func TestConfigUnsetFlow(t *testing.T) {
+	repo := newGitRepo(t)
+	writeConfig(t, repo, minimalConfig+`
+hooks:
+  precreate:
+    - echo keep-me # comment must survive
+    - echo drop-me
+worker_slots: 4
+`)
+	e := newEnv(t)
+
+	t.Run("unset patches[1] removes the element, keeps comments", func(t *testing.T) {
+		res := e.run(t, repo, "config", "unset", "hooks.precreate[1]")
+		if res.err != nil {
+			t.Fatalf("unset: %v\nstderr:\n%s", res.err, res.stderr)
+		}
+		body, err := os.ReadFile(filepath.Join(repo, ".treeman.yaml"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(body), "echo keep-me # comment must survive") {
+			t.Errorf("sibling entry or comment lost:\n%s", body)
+		}
+		if strings.Contains(string(body), "drop-me") {
+			t.Errorf("element not removed:\n%s", body)
+		}
+		if !strings.Contains(string(body), "worker_slots: 4") {
+			t.Errorf("unrelated key disturbed:\n%s", body)
+		}
+	})
+
+	t.Run("unset lands in history", func(t *testing.T) {
+		res := e.run(t, repo, "config", "history", "--json")
+		if res.err != nil {
+			t.Fatalf("history: %v\nstderr:\n%s", res.err, res.stderr)
+		}
+		var out struct {
+			Generations []struct {
+				Generation int `json:"generation"`
+			} `json:"generations"`
+		}
+		if err := json.Unmarshal([]byte(strings.TrimSpace(res.stdout)), &out); err != nil {
+			t.Fatalf("decode history JSON %q: %v", res.stdout, err)
+		}
+		if len(out.Generations) == 0 {
+			t.Errorf("unset left no generations: %s", res.stdout)
+		}
+	})
+
+	t.Run("unsetting a missing key errors", func(t *testing.T) {
+		res := e.run(t, repo, "config", "unset", "hooks.precreate[9]")
+		if res.err == nil {
+			t.Errorf("expected error unsetting an out-of-range element")
+		}
+	})
+
+	t.Run("global key rejected without --global", func(t *testing.T) {
+		res := e.run(t, repo, "config", "unset", "daemon.log_level")
+		if res.err == nil || !strings.Contains(res.stdout+res.stderr, "global config") {
+			t.Errorf("repo-layer unset of a global key should fail with the layer message:\nstdout:\n%s\nstderr:\n%s", res.stdout, res.stderr)
+		}
+	})
+}
+
 func TestConfigHistory(t *testing.T) {
 	repo := newGitRepo(t)
 	writeConfig(t, repo, minimalConfig+"\nworker_slots: 1\n")

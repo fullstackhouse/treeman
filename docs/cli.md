@@ -708,6 +708,23 @@ Examples:
 | `--json` |  |
 | `--global` | edit the user-global ~/.config/treeman/config.yaml instead of .treeman.yaml |
 
+### `treeman config unset`
+
+remove a key or sequence element from the config by dotted path (comments preserved, prior content lands in history)
+
+```
+Examples:
+  treeman config unset worktrees.links
+  treeman config unset patches[0]
+  treeman config unset --global daemon.log_level
+```
+
+| Flag | Usage |
+|---|---|
+| `-r`, `--repo` |  |
+| `--json` |  |
+| `--global` | edit the user-global ~/.config/treeman/config.yaml instead of .treeman.yaml |
+
 ### `treeman config history`
 
 list stored .treeman.yaml generations for this repo
