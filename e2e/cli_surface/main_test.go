@@ -149,6 +149,21 @@ func (e *env) run(t *testing.T, cwd string, args ...string) cliResult {
 	return cliResult{stdout: sout.String(), stderr: serr.String(), err: err}
 }
 
+// runEnv is run with extra environment variables layered on top of
+// the block — for exercising env-driven behavior like
+// TREEMAN_REQUIRE_DAEMON without leaking into other tests.
+func (e *env) runEnv(t *testing.T, cwd string, extra []string, args ...string) cliResult {
+	t.Helper()
+	cmd := exec.Command(sharedBin(t), args...)
+	cmd.Dir = cwd
+	cmd.Env = append(append(os.Environ(), e.block()...), extra...)
+	var sout, serr strings.Builder
+	cmd.Stdout = &sout
+	cmd.Stderr = &serr
+	err := cmd.Run()
+	return cliResult{stdout: sout.String(), stderr: serr.String(), err: err}
+}
+
 // runColor is run with the block's NO_COLOR stripped, so tests can
 // exercise --color=always against a non-TTY stdout.
 func (e *env) runColor(t *testing.T, cwd string, args ...string) cliResult {

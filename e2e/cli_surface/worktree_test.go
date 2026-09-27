@@ -558,6 +558,60 @@ func TestWtSwitchConsolidatedIntoGo(t *testing.T) {
 	})
 }
 
+// TestRequireDaemonStrictMode pins the strict-daemon contract (#75):
+// with --require-daemon (or TREEMAN_REQUIRE_DAEMON=1) and no daemon,
+// submitPlan-backed commands fail fast naming `treeman daemon start`
+// instead of silently running in-process; without the flag the
+// daemon-less fallback keeps working, and the flag is a no-op when
+// the daemon IS reachable.
+func TestRequireDaemonStrictMode(t *testing.T) {
+	repo := newGitRepo(t)
+	e := newEnv(t)
+	writeConfig(t, repo, minimalConfig)
+
+	t.Run("flag fails fast with the start hint", func(t *testing.T) {
+		res := e.run(t, repo, "--require-daemon", "prepare", "--repo", repo, "--worktree", repo)
+		if res.err == nil {
+			t.Fatal("strict mode with daemon down should fail")
+		}
+		combined := res.stdout + res.stderr
+		for _, want := range []string{"--require-daemon", "treeman daemon start"} {
+			if !strings.Contains(combined, want) {
+				t.Errorf("strict failure missing %q:\nstdout:\n%s\nstderr:\n%s", want, res.stdout, res.stderr)
+			}
+		}
+		if strings.Contains(combined, "running in-process") {
+			t.Errorf("strict mode must not fall back in-process:\n%s", combined)
+		}
+	})
+
+	t.Run("env var behaves like the flag", func(t *testing.T) {
+		res := e.runEnv(t, repo, []string{"TREEMAN_REQUIRE_DAEMON=1"}, "db", "reset", "--repo", repo)
+		if res.err == nil {
+			t.Fatal("TREEMAN_REQUIRE_DAEMON=1 with daemon down should fail")
+		}
+		if !strings.Contains(res.stdout+res.stderr, "--require-daemon") {
+			t.Errorf("env-driven strict failure missing the flag hint:\nstdout:\n%s\nstderr:\n%s", res.stdout, res.stderr)
+		}
+	})
+
+	t.Run("without the flag the fallback still works", func(t *testing.T) {
+		// Engine-free config: the fallback's in-process prepare must get
+		// past the daemon-unreachable warn and fail (or succeed) on its
+		// own merits — here it runs to completion because there are no
+		// databases to prepare.
+		engineFree := newGitRepo(t)
+		writeConfig(t, engineFree, "worktrees:\n  root: .worktrees\n")
+		res := e.run(t, engineFree, "prepare", "--repo", engineFree, "--worktree", engineFree)
+		if res.err != nil {
+			t.Fatalf("daemon-less fallback should still work: %v\nstderr:\n%s", res.err, res.stderr)
+		}
+		if !strings.Contains(res.stdout+res.stderr, "running in-process") {
+			t.Errorf("fallback should announce the in-process run:\n%s", res.stdout+res.stderr)
+		}
+	})
+}
+
 // ── treeman wt alias ──────────────────────────────────────────
 
 func TestWtAlias(t *testing.T) {

@@ -212,11 +212,31 @@ func writeConfig(ctx context.Context, repoRoot, path string, body []byte) error 
 	return err
 }
 
+// strictDaemon records whether this invocation demands a live daemon
+// (--require-daemon flag or TREEMAN_REQUIRE_DAEMON=1). In strict mode
+// submitPlan refuses the in-process fallback, so scripts fail fast and
+// loud when treemand is down instead of silently changing latency and
+// single-writer semantics. Package state, set once in the root
+// command's Before — same lifecycle as the color mode.
+var strictDaemon bool
+
+// SetStrictDaemon pins strict-daemon mode for this invocation.
+func SetStrictDaemon(v bool) { strictDaemon = v }
+
+// StrictDaemon reports whether the in-process fallback is disabled.
+func StrictDaemon() bool { return strictDaemon }
+
 // submitPlan runs a plan: dispatch to the daemon when reachable, else
 // execute it in-process. treeman works daemon-less — the daemon is the
 // preferred mutator (fast async return, single writer), not a hard
 // requirement. Always yields a response: KindPlanQueued from a live
 // daemon, KindPlanResult from in-process, or KindError.
+//
+// Strict mode (--require-daemon / TREEMAN_REQUIRE_DAEMON=1, #75) opts
+// out of the fallback: an unreachable daemon is a hard error naming
+// `treeman daemon start`, so scripts get a fast, loud failure instead
+// of a silent latency/semantics change (in-process blocks until done
+// and bypasses the daemon's single-writer guarantees).
 func submitPlan(ctx context.Context, req rpc.Request) rpc.Response {
 	resp, err := rpc.Call(ctx, req)
 	if err == nil {
@@ -229,6 +249,12 @@ func submitPlan(ctx context.Context, req rpc.Request) rpc.Response {
 	// the daemon (e.g. UNIQUE constraint on worktrees.path). Surface it.
 	if !errors.Is(err, rpc.ErrDaemonUnreachable) {
 		return rpc.Response{Kind: rpc.KindError, Message: err.Error()}
+	}
+	if StrictDaemon() {
+		return rpc.Response{
+			Kind:    rpc.KindError,
+			Message: err.Error() + " — strict mode (--require-daemon): refusing to run in-process; start it with `treeman daemon start`",
+		}
 	}
 	// Say so BEFORE running: without this line a task the user expects
 	// to queue detached silently blocks the terminal for the whole

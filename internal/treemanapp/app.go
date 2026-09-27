@@ -6,6 +6,7 @@ package treemanapp
 
 import (
 	"context"
+	"os"
 
 	"github.com/urfave/cli/v3"
 
@@ -32,11 +33,16 @@ func New() *cli.Command {
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "config", Usage: "user-global config file (overrides TREEMAN_CONFIG)"},
 			&cli.StringFlag{Name: "color", Value: "auto", Usage: "when to colorize output: auto | always | never (NO_COLOR beats always)"},
+			&cli.BoolFlag{
+				Name:  "require-daemon",
+				Usage: "fail instead of falling back to in-process execution when treemand is unreachable (or set TREEMAN_REQUIRE_DAEMON=1)",
+			},
 		},
 		Before: func(ctx context.Context, c *cli.Command) (context.Context, error) {
 			if err := ui.SetColorMode(c.String("color")); err != nil {
 				return ctx, err
 			}
+			cmd.SetStrictDaemon(c.Bool("require-daemon") || os.Getenv("TREEMAN_REQUIRE_DAEMON") == "1")
 			var err error
 			restoreConfig, err = config.ConfigureGlobalPath(c.String("config"))
 			return ctx, err
