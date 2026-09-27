@@ -741,7 +741,11 @@ daemon lifecycle
 
 ### `treeman daemon start`
 
+start treemand in the background (no-op when already running)
+
 ### `treeman daemon stop`
+
+request a graceful treemand shutdown
 
 ### `treeman daemon reload`
 
@@ -752,6 +756,8 @@ ask the daemon to re-read config + restart watchers (no process restart)
 | `-r`, `--repo` | limit reload to one repo path; defaults to all |
 
 ### `treeman daemon status`
+
+show whether treemand is running (pid, version, watchers)
 
 | Flag | Usage |
 |---|---|
@@ -767,7 +773,11 @@ live runtime snapshot — watchers, in-flight finalizes/teardowns, auto-fetch ba
 
 ### `treeman daemon install`
 
+install + enable the treemand auto-start unit (systemd user service on Linux, launchd on macOS)
+
 ### `treeman daemon uninstall`
+
+remove the treemand auto-start unit
 
 | Flag | Usage |
 |---|---|

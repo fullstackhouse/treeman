@@ -858,8 +858,16 @@ func DaemonCmd() *cli.Command {
 		Name:  "daemon",
 		Usage: "daemon lifecycle",
 		Commands: []*cli.Command{
-			{Name: "start", Action: daemonStart},
-			{Name: "stop", Action: daemonStop},
+			{
+				Name:  "start",
+				Usage: "start treemand in the background (no-op when already running)",
+				Action: daemonStart,
+			},
+			{
+				Name:  "stop",
+				Usage: "request a graceful treemand shutdown",
+				Action: daemonStop,
+			},
 			{
 				Name:  "reload",
 				Usage: "ask the daemon to re-read config + restart watchers (no process restart)",
@@ -869,8 +877,9 @@ func DaemonCmd() *cli.Command {
 				Action: daemonReload,
 			},
 			{
-				Name:   "status",
-				Flags:  []cli.Flag{&cli.BoolFlag{Name: "json"}},
+				Name:  "status",
+				Usage: "show whether treemand is running (pid, version, watchers)",
+				Flags: []cli.Flag{&cli.BoolFlag{Name: "json"}},
 				Action: daemonStatus,
 			},
 			{
@@ -879,9 +888,14 @@ func DaemonCmd() *cli.Command {
 				Flags:  []cli.Flag{&cli.BoolFlag{Name: "json"}},
 				Action: daemonState,
 			},
-			{Name: "install", Action: daemonInstall},
 			{
-				Name: "uninstall",
+				Name:  "install",
+				Usage: "install + enable the treemand auto-start unit (systemd user service on Linux, launchd on macOS)",
+				Action: daemonInstall,
+			},
+			{
+				Name:  "uninstall",
+				Usage: "remove the treemand auto-start unit",
 				Flags: []cli.Flag{
 					&cli.BoolFlag{Name: "yes", Aliases: []string{"y"}, Usage: "skip the confirmation prompt"},
 				},
