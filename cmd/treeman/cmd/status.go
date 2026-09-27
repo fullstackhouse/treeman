@@ -13,6 +13,7 @@ import (
 	"github.com/stubbedev/treeman/internal/config"
 	"github.com/stubbedev/treeman/internal/store"
 	"github.com/stubbedev/treeman/internal/template"
+	"github.com/stubbedev/treeman/internal/ui"
 )
 
 // The four buckets every active worktree falls into. `up`/`down` are
@@ -38,6 +39,10 @@ type statusWt struct {
 	Bucket string `json:"bucket"`
 	IsMain bool   `json:"is_main"`
 	Path   string `json:"path"`
+	// AgeTs is the unix-ms of the worktree's latest lifecycle event —
+	// the "how long has it been in this state" input for the table
+	// format's AGE column (#57). 0 when no event exists yet.
+	AgeTs int64 `json:"age_ts"`
 }
 
 type statusRepo struct {
@@ -70,7 +75,9 @@ four buckets — stable (ready), up (preparing), down (tearing down),
 failed (last finalize errored) — and renders them.
 
 Formats (--format):
-  icon    one-line counter (default), plain text
+  table   aligned per-worktree table, colored states + relative age
+          (default when stdout is a TTY)
+  icon    one-line counter, plain text (default when piped)
   hover   per-repo grouped detail, plain text (the "cal-style" block)
   waybar  {"text","tooltip","class"} JSON for a waybar custom module
   json    the raw aggregated shape (counts + per-repo worktrees)
@@ -82,8 +89,8 @@ formats are all configured under the global config's status: block.`,
 			&cli.StringFlag{
 				Name:    "format",
 				Aliases: []string{"f"},
-				Value:   "icon",
-				Usage:   "icon | hover | waybar | json | <name from status.formats>",
+				Value:   "",
+				Usage:   "table | icon | hover | waybar | json | <name from status.formats> (default: table on a TTY, else icon)",
 			},
 		},
 		Action: func(ctx context.Context, c *cli.Command) error {
@@ -95,7 +102,16 @@ formats are all configured under the global config's status: block.`,
 			if err != nil {
 				return err
 			}
-			out, err := renderStatus(c.String("format"), data, gcfg.Status)
+			format := c.String("format")
+			if format == "" {
+				// Humans get the table, scripts keep the icon line — a
+				// piped `treeman status` must not change shape.
+				format = "icon"
+				if ui.IsTTY() {
+					format = "table"
+				}
+			}
+			out, err := renderStatus(format, data, gcfg.Status)
 			if err != nil {
 				return err
 			}
@@ -175,6 +191,7 @@ func collectStatus(ctx context.Context) (statusData, error) {
 		rs.Total++
 		r.wt.State = state
 		r.wt.Bucket = bucket
+		r.wt.AgeTs = latest[r.id].Ts
 		rs.Worktrees = append(rs.Worktrees, r.wt)
 	}
 	for _, rp := range repoOrder {
@@ -256,6 +273,8 @@ func worstClass(d statusData) string {
 // (which may override `icon`) or the default icon line.
 func renderStatus(format string, d statusData, cfg config.StatusConfig) (string, error) {
 	switch format {
+	case "table":
+		return renderStatusTable(d, cfg), nil
 	case "hover":
 		return renderHover(d, cfg)
 	case "waybar":
@@ -270,7 +289,41 @@ func renderStatus(format string, d statusData, cfg config.StatusConfig) (string,
 	if format == "" || format == "icon" {
 		return template.RenderMap(defaultIconFormat, statusTokens(d, cfg))
 	}
-	return "", fmt.Errorf("unknown --format %q (icon|hover|waybar|json or a name from status.formats)", format)
+	return "", fmt.Errorf("unknown --format %q (table|icon|hover|waybar|json or a name from status.formats)", format)
+}
+
+// renderStatusTable renders the human-facing aligned table (#57):
+// bucket icon, ui.Status-colored state, branch, slug, relative age,
+// repo — one row per worktree. Color tokens are ANSI-safe through
+// ui.Table's width math, so NO_COLOR stays aligned too.
+func renderStatusTable(d statusData, cfg config.StatusConfig) string {
+	icons := map[string]string{
+		bucketStable: cfg.Icons.Stable,
+		bucketUp:     cfg.Icons.Up,
+		bucketDown:   cfg.Icons.Down,
+		bucketFailed: cfg.Icons.Failed,
+	}
+	tbl := ui.NewTable("", "STATE", "BRANCH", "SLUG", "AGE", "REPO")
+	for _, repo := range d.Repos {
+		for _, wt := range repo.Worktrees {
+			age := "—"
+			if wt.AgeTs > 0 {
+				age = lastLabel(wt.AgeTs/1000, 0)
+			}
+			tbl.Row(
+				icons[wt.Bucket],
+				ui.Status(wt.State),
+				wt.Branch,
+				wt.Slug,
+				age,
+				repo.Repo,
+			)
+		}
+	}
+	var b strings.Builder
+	tbl.SetWidth(ui.TermWidth())
+	tbl.Render(&b)
+	return strings.TrimRight(b.String(), "\n")
 }
 
 // renderWaybar assembles the `{text,tooltip,class}` object a waybar
