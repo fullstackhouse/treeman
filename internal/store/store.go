@@ -1179,15 +1179,21 @@ func (s *Store) WriteEvent(ctx context.Context,
 	payload any,
 ) error {
 	payload = injectRunID(ctx, payload)
-	pj, err := json.Marshal(payload)
-	if err != nil {
-		return fmt.Errorf("encode event payload: %w", err)
-	}
 	row := pendingEvent{
 		tsMillis:  nowMillis(),
 		level:     level,
 		eventType: eventType,
-		payload:   string(pj),
+	}
+	if payload != nil {
+		pj, err := json.Marshal(payload)
+		if err != nil {
+			return fmt.Errorf("encode event payload: %w", err)
+		}
+		row.payload = string(pj)
+	} else {
+		// json.Marshal(nil) is the literal "null" — skip the marshal
+		// + string copy on the payload-less event path entirely.
+		row.payload = "null"
 	}
 	if repoID > 0 {
 		row.repoID = repoID

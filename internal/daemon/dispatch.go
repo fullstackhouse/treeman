@@ -1,13 +1,16 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	cryptorand "crypto/rand"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
+	"net"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -213,27 +216,36 @@ func IsStreamingMethod(method string) bool {
 }
 
 // DispatchStreaming handles a streaming RPC method. Writes Response
-// envelopes to enc as events arrive until ctx cancels, the client
-// closes (next enc.Encode fails), or the underlying subscription
-// ends. Returns when the connection should be torn down. Errors are
-// logged + swallowed; the connection close terminates the stream.
-func DispatchStreaming(ctx context.Context, st *State, enc *json.Encoder, req rpc.Request) {
+// envelopes to conn as events arrive until ctx cancels, the client
+// closes (next write fails), or the underlying subscription ends.
+// Returns when the connection should be torn down. Errors are logged
+// + swallowed; the connection close terminates the stream.
+func DispatchStreaming(ctx context.Context, st *State, conn net.Conn, req rpc.Request) {
 	switch req.Method {
 	case rpc.MethodEventSubscribe:
-		streamEvents(ctx, st, enc, req)
+		streamEvents(ctx, st, conn, req)
 	default:
-		// Best-effort error envelope; ignore write failures (client
-		// has likely already closed).
-		_ = enc.Encode(&rpc.Response{Kind: rpc.KindError, Message: "not a streaming method: " + req.Method}) //nolint:errchkjson
+		// Best-effort error envelope; a failed write means the client
+		// has likely already closed.
+		if err := json.NewEncoder(conn).
+			Encode(&rpc.Response{Kind: rpc.KindError, Message: "not a streaming method: " + req.Method}); err != nil {
+			slog.Debug("streaming error envelope dropped", "method", req.Method, "err", err)
+		}
 	}
 }
 
 // streamEvents registers a hook on st.Store that filters events
-// against args and writes matching ones to enc as KindEvent responses.
+// against args and writes matching ones to conn as KindEvent responses.
 // Blocks until ctx cancels, the client closes, or a write fails.
 // Filter semantics: every non-empty field is AND-combined; empty
 // fields match everything (matches logs_query exactly).
-func streamEvents(ctx context.Context, st *State, enc *json.Encoder, req rpc.Request) {
+//
+// Writes are batched: whenever an event arrives, every envelope
+// already queued behind it is coalesced into a single conn.Write, so
+// a burst of events costs one syscall instead of one per event. The
+// wire bytes are identical to one-Encode-per-event — newline-
+// delimited JSON frames.
+func streamEvents(ctx context.Context, st *State, conn net.Conn, req rpc.Request) {
 	args := rpc.EventSubscribeArgs{}
 	if req.EventSubscribe != nil {
 		args = *req.EventSubscribe
@@ -267,15 +279,49 @@ func streamEvents(ctx context.Context, st *State, enc *json.Encoder, req rpc.Req
 	})
 	defer st.Store.UnregisterEventHook(hookID)
 
+	// One reusable frame buffer per subscription: batches encode into
+	// it and land on the conn in a single write. json.Encoder reuses
+	// its internal scratch across Encode calls, so steady-state per-
+	// event encoding allocates nothing.
+	buf := new(bytes.Buffer)
+	enc := json.NewEncoder(buf)
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case ev := <-ch:
-			resp := rpc.Response{Kind: rpc.KindEvent, Event: &ev}
-			if err := enc.Encode(&resp); err != nil {
+			buf.Reset()
+			encodeEventBatch(enc, ev, ch)
+			if _, err := conn.Write(buf.Bytes()); err != nil {
 				return
 			}
+		}
+	}
+}
+
+// encodeEventBatch frames `first` plus every envelope already queued
+// on ch into enc (bound to the caller's reusable buffer) as newline-
+// delimited KindEvent responses. Non-blocking drains only — an idle
+// stream returns after one frame. The caller resets the buffer between
+// batches, so per-event cost is a buffered encode with no fresh
+// output allocation.
+func encodeEventBatch(enc *json.Encoder, first rpc.EventEnvelope, ch <-chan rpc.EventEnvelope) {
+	ev := first
+	for {
+		resp := rpc.Response{Kind: rpc.KindEvent, Event: &ev}
+		if err := enc.Encode(&resp); err != nil {
+			// json.Encoder into a bytes.Buffer cannot fail on this
+			// concrete type; stop rather than desync the frame stream.
+			return
+		}
+		if len(ch) == 0 {
+			return
+		}
+		select {
+		case ev = <-ch:
+		default:
+			return
 		}
 	}
 }
@@ -483,13 +529,8 @@ func errResp(msg string) rpc.Response {
 // worktree registry.
 func listWorktreePaths(ctx context.Context, st *State, repoPath string) ([]string, error) {
 	var (
-		rows interface {
-			Close() error
-			Next() bool
-			Scan(dest ...any) error
-			Err() error
-		}
-		err error
+		rows *sql.Rows
+		err  error
 	)
 	if repoPath == "" {
 		rows, err = st.Store.DB.QueryContext(ctx,

@@ -67,13 +67,12 @@ func TestStreamingSubscribe_EndToEnd(t *testing.T) {
 		}
 		defer func() { _ = conn.Close() }()
 		dec := json.NewDecoder(conn)
-		enc := json.NewEncoder(conn)
 		var req rpc.Request
 		if err := dec.Decode(&req); err != nil {
 			return
 		}
 		if IsStreamingMethod(req.Method) {
-			DispatchStreaming(ctx, st, enc, req)
+			DispatchStreaming(ctx, st, conn, req)
 		}
 	}()
 
@@ -141,12 +140,11 @@ func TestStreamingSubscribe_LevelFilter(t *testing.T) {
 		}
 		defer func() { _ = conn.Close() }()
 		dec := json.NewDecoder(conn)
-		enc := json.NewEncoder(conn)
 		var req rpc.Request
 		if err := dec.Decode(&req); err != nil {
 			return
 		}
-		DispatchStreaming(ctx, st, enc, req)
+		DispatchStreaming(ctx, st, conn, req)
 	}()
 
 	stream, stop, err := rpc.SubscribeEvents(ctx, rpc.EventSubscribeArgs{

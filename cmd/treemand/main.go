@@ -382,7 +382,7 @@ func handleConn(ctx context.Context, conn net.Conn, st *daemon.State, shutdown c
 			// the subscription. Caller closing the socket (or our ctx
 			// cancelling) ends the stream; we don't loop for more
 			// requests on the same conn.
-			daemon.DispatchStreaming(ctx, st, enc, req)
+			daemon.DispatchStreaming(ctx, st, conn, req)
 			return
 		}
 		resp := daemon.Dispatch(ctx, st, shutdown, req)
