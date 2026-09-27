@@ -316,6 +316,7 @@ drop the entire stash stack (with confirmation)
 | Flag | Usage |
 |---|---|
 | `-r`, `--repo` | worktree/repo dir (default: cwd) |
+| `-y`, `--yes` | assume yes (non-interactive) |
 
 ### `treeman git wipe`
 
@@ -325,6 +326,7 @@ wipe local changes (stash + drop; --all also clears the stash stack)
 |---|---|
 | `-r`, `--repo` | worktree/repo dir (default: cwd) |
 | `-a`, `--all` |  |
+| `-y`, `--yes` | assume yes (non-interactive) |
 
 ### `treeman git log`
 

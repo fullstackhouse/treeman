@@ -134,16 +134,29 @@ func TestGitSurface(t *testing.T) {
 		}
 	})
 
-	t.Run("wipe non-TTY discards changes", func(t *testing.T) {
+	t.Run("wipe non-TTY refuses without --yes, wipes with it", func(t *testing.T) {
 		repo := newGitRepo(t)
 		write(t, repo, "junk.txt", "x\n")
-		// Non-TTY Confirm auto-proceeds (documented opt-in for scripts).
+		// Non-TTY must NOT auto-proceed on a destructive prompt — the
+		// session has no one to answer, so it refuses with the --yes hint
+		// and leaves the tree untouched.
 		res := e.run(t, repo, "git", "wipe")
 		if res.err != nil {
-			t.Fatalf("git wipe: %v\nstderr:\n%s", res.err, res.stderr)
+			t.Fatalf("git wipe (refused): %v\nstderr:\n%s", res.err, res.stderr)
+		}
+		if !strings.Contains(res.stdout+res.stderr, "--yes") {
+			t.Errorf("refused wipe should hint at --yes:\nstdout:\n%s\nstderr:\n%s", res.stdout, res.stderr)
+		}
+		if st := strings.TrimSpace(gitOut(t, repo, "status", "--porcelain")); st == "" {
+			t.Fatal("refused wipe must not discard changes")
+		}
+		// The explicit flag is the scripting opt-in.
+		res = e.run(t, repo, "git", "wipe", "--yes")
+		if res.err != nil {
+			t.Fatalf("git wipe --yes: %v\nstderr:\n%s", res.err, res.stderr)
 		}
 		if st := strings.TrimSpace(gitOut(t, repo, "status", "--porcelain")); st != "" {
-			t.Errorf("worktree not clean after wipe:\n%s", st)
+			t.Errorf("worktree not clean after wipe --yes:\n%s", st)
 		}
 	})
 

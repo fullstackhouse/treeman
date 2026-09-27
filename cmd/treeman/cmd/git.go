@@ -160,13 +160,13 @@ func gitPush() *cli.Command {
 				return errors.New("detached HEAD; nothing to push")
 			}
 			if reason := gitx.ProtectedPush(branch, gpProtectedGlobs(ctx, dir)); reason != "" {
-				if !ui.ConfirmYes("Push: " + reason + " — continue?") {
+				if !ui.ConfirmAutoYes("Push: " + reason + " — continue?") {
 					return nil
 				}
 			}
 			// Divergence: upstream ahead → push will be rejected without --force.
 			if n, _ := gitcmd.String(ctx, dir, "rev-list", "--count", "HEAD..@{u}"); n != "" && n != "0" {
-				if !ui.ConfirmYes(fmt.Sprintf("Push: upstream is ahead by %s commit(s) — continue?", n)) {
+				if !ui.ConfirmAutoYes(fmt.Sprintf("Push: upstream is ahead by %s commit(s) — continue?", n)) {
 					return nil
 				}
 			}
@@ -466,7 +466,10 @@ func gitStash() *cli.Command {
 			{
 				Name:  "clear",
 				Usage: "drop the entire stash stack (with confirmation)",
-				Flags: []cli.Flag{repoFlag()},
+				Flags: []cli.Flag{
+					repoFlag(),
+					&cli.BoolFlag{Name: "yes", Aliases: []string{"y"}, Usage: "assume yes (non-interactive)"},
+				},
 				Action: func(ctx context.Context, c *cli.Command) error {
 					dir, err := gitWorkdir(c)
 					if err != nil {
@@ -478,7 +481,7 @@ func gitStash() *cli.Command {
 						return nil
 					}
 					n := len(strings.Split(list, "\n"))
-					if !ui.ConfirmYes(fmt.Sprintf("Drop all %d stash(es)?", n)) {
+					if !c.Bool("yes") && !ui.ConfirmYes(fmt.Sprintf("Drop all %d stash(es)?", n)) {
 						return nil
 					}
 					return runGit(ctx, dir, "stash", "clear")
@@ -504,6 +507,7 @@ func gitWipe() *cli.Command {
 		Flags: []cli.Flag{
 			repoFlag(),
 			&cli.BoolFlag{Name: "all", Aliases: []string{"a"}},
+			&cli.BoolFlag{Name: "yes", Aliases: []string{"y"}, Usage: "assume yes (non-interactive)"},
 		},
 		Action: func(ctx context.Context, c *cli.Command) error {
 			dir, err := gitWorkdir(c)
@@ -511,7 +515,7 @@ func gitWipe() *cli.Command {
 				return err
 			}
 			if c.Bool("all") {
-				if !ui.ConfirmYes("Wipe working changes + entire stash stack?") {
+				if !c.Bool("yes") && !ui.ConfirmYes("Wipe working changes + entire stash stack?") {
 					return nil
 				}
 				_ = gitcmd.Run(ctx, dir, "stash", "push", "-u")
@@ -520,7 +524,7 @@ func gitWipe() *cli.Command {
 			if dirty, _ := gitenv.HasWorkingTreeChanges(ctx, dir); !dirty {
 				return nil
 			}
-			if !ui.ConfirmYes("Wipe non-pushed changes on local branch?") {
+			if !c.Bool("yes") && !ui.ConfirmYes("Wipe non-pushed changes on local branch?") {
 				return nil
 			}
 			if err := gitcmd.Run(ctx, dir, "stash", "push", "-u"); err != nil {

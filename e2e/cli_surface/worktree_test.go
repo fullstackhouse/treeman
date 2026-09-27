@@ -357,7 +357,11 @@ func TestWtDeleteDispatch(t *testing.T) {
 	// shell shim depends on for the early-return contract.
 	e := newEnv(t)
 	repo, wtA, _ := makeWorktreeFixture(t, e)
-	res := e.run(t, repo, "worktree", "delete", "--force", "feat_a")
+	// --yes skips the dirty/unpushed confirm (the fixture dir isn't a
+	// real git worktree, so the guard reads it as dirty); this test
+	// pins the dispatch surface, not the confirm policy — that's
+	// TestWtDeleteConfirmNonTTY.
+	res := e.run(t, repo, "worktree", "delete", "--force", "--yes", "feat_a")
 	combined := res.stdout + res.stderr
 	if !strings.Contains(combined, "queued") && !strings.Contains(combined, "teardown") &&
 		!strings.Contains(combined, "daemon") {
@@ -372,7 +376,43 @@ func TestWtDeleteDispatch(t *testing.T) {
 	}
 }
 
-// ── treeman wt alias ──────────────────────────────────────
+// TestWtDeleteConfirmNonTTY pins the destructive-confirm refusal: a
+// piped (non-TTY) `wt delete` of a DIRTY worktree must not auto-answer
+// the destroy prompt — it aborts with the --yes hint and leaves the
+// worktree registered; --yes is the scripting opt-in that proceeds.
+func TestWtDeleteConfirmNonTTY(t *testing.T) {
+	repo := newGitRepo(t)
+	e := newEnv(t)
+	dirty := filepath.Join(repo, ".worktrees", "dirty")
+	mustGit(t, repo, "worktree", "add", "-b", "dirty-branch", dirty, "HEAD")
+	if err := os.WriteFile(filepath.Join(dirty, "uncommitted.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res := e.run(t, dirty, "worktree", "register", "--branch", "dirty-branch")
+	if res.err != nil {
+		t.Fatalf("worktree register: %v\nstderr:\n%s", res.err, res.stderr)
+	}
+
+	res = e.run(t, repo, "worktree", "delete", "dirty")
+	if res.err != nil {
+		t.Fatalf("refused delete must exit 0: %v\nstderr:\n%s", res.err, res.stderr)
+	}
+	if !strings.Contains(res.stdout+res.stderr, "--yes") {
+		t.Errorf("refused dirty delete should hint at --yes:\nstdout:\n%s\nstderr:\n%s", res.stdout, res.stderr)
+	}
+	res = e.run(t, repo, "worktree", "list", "--json")
+	if !strings.Contains(res.stdout, `"dirty"`) {
+		t.Errorf("refused delete must leave the worktree registered:\n%s", res.stdout)
+	}
+
+	// --yes is the non-interactive opt-in that lets the teardown run.
+	res = e.run(t, repo, "worktree", "delete", "--yes", "dirty")
+	if res.err != nil {
+		t.Fatalf("delete --yes: %v\nstderr:\n%s", res.err, res.stderr)
+	}
+}
+
+// ── treeman wt alias ──────────────────────────────────────────
 
 func TestWtAlias(t *testing.T) {
 	t.Run("alias routes identically to the full spelling", func(t *testing.T) {
