@@ -20,7 +20,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 
 	"github.com/stubbedev/treeman/internal/config"
 	"github.com/stubbedev/treeman/internal/db/containerip"
@@ -366,13 +365,19 @@ func spawnDetached(
 	}
 	defer func() { _ = logFile.Close() }()
 
-	c := exec.Command("/bin/sh", "-c", cmdStr) //nolint:noctx // detached setsid hook; must outlive caller ctx
+	// Platform shell + detach attr live in shell_{unix,other}.go —
+	// windows has no /bin/sh and no Setsid, so building the command
+	// there fails up front with a clear message instead of a scattered
+	// syscall type error (#89).
+	c, err := shellCommand(cmdStr)
+	if err != nil {
+		return nil, err
+	}
 	c.Dir = cwd
 	c.Env = buildEnv(inheritedEnv, repoRoot, worktreePath, slug, isMain)
 	c.Stdout = logFile
 	c.Stderr = logFile
 	c.Stdin = nil
-	c.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
 	if err := c.Start(); err != nil {
 		return nil, fmt.Errorf("setsid spawn `%s`: %w", cmdStr, err)

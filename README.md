@@ -130,6 +130,17 @@ so daemon startup finds its matching `treemand`; the original `PATH` follows
 unchanged, and other environment variables are preserved. Linux/macOS amd64 and arm64 are supported;
 Windows and 32-bit platforms are not.
 
+### Platform support
+
+Treeman targets POSIX systems. Linux is the primary, fully-tested
+platform; macOS and the BSDs (FreeBSD, OpenBSD, NetBSD) build and run
+(`CGO_ENABLED=0` for cross builds — the SQLite driver is pure Go),
+though only Linux and macOS see CI coverage. Windows can compile
+(`GOOS=windows go build ./...` is kept honest — no scattered syscall
+type errors), but running it is unsupported: hooks need `/bin/sh` and
+`setsid` and fail with an explicit unsupported-platform error, and the
+daemon's peer-credential check is stubbed out.
+
 First use needs HTTPS access to GitHub release assets (including GitHub's
 asset redirect host), plus a writable executable cache directory. The default
 is `$XDG_CACHE_HOME/treeman/composer`, or `$HOME/.cache/treeman/composer`.

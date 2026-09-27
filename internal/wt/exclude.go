@@ -2,11 +2,9 @@ package wt
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 )
 
 // excludeHeader marks the block treeman appends to info/exclude, so a
@@ -44,21 +42,17 @@ func ensureRepoExcludes(repoRoot string, rels []string) error {
 		return err
 	}
 
-	f, err := os.OpenFile(excludePath, os.O_RDWR|os.O_CREATE, 0o644)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = f.Close() }()
-
 	// A CLI sync and the daemon finalize run in different processes and can
 	// touch this shared file at once; lock the whole read-modify-write.
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+	// The lock primitive is platform-split (flock vs LockFileEx, #89).
+	unlock, err := lockExcludeFile(excludePath)
+	if err != nil {
 		return err
 	}
-	defer func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN) }()
+	defer unlock()
 
-	body, err := io.ReadAll(f)
-	if err != nil {
+	body, err := os.ReadFile(excludePath)
+	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
 
@@ -97,11 +91,7 @@ func ensureRepoExcludes(repoRoot string, rels []string) error {
 		b.WriteByte('\n')
 	}
 
-	if _, err := f.Seek(0, io.SeekEnd); err != nil {
-		return err
-	}
-	_, err = f.WriteString(b.String())
-	return err
+	return appendFile(excludePath, b.String())
 }
 
 // anchoredPatterns turns repo-relative paths into deduped, root-anchored

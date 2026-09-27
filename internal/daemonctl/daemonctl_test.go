@@ -1,3 +1,5 @@
+//go:build !windows
+
 // Cross-platform coverage for the OS-native daemon control paths.
 //
 // daemonctl.Start/Stop shell out to systemctl (Linux) or launchctl
