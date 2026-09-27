@@ -579,7 +579,33 @@ func (s *Store) EnsureWorktreeWithAdmin(ctx context.Context, repoID int64, path,
 	// TeardownWorktree short-circuits on the `row.Deleted` check so
 	// predelete + db drop + git remove never run and the working tree
 	// lingers on disk forever. Also keep admin_dir current.
+	//
+	// ResolveIdentity funnels every worktree-scoped operation through
+	// here, so the common case — every column already current — skips
+	// the UPDATE entirely rather than churning a WAL page per call.
 	refresh := func(id int64) (int64, error) {
+		var curSlug string
+		var curBranch, curAdmin sql.NullString
+		var curDeleted sql.NullInt64
+		if err := s.DB.QueryRowContext(ctx,
+			"SELECT slug, branch, admin_dir, deleted_at FROM worktrees WHERE id = ?", id,
+		).Scan(&curSlug, &curBranch, &curAdmin, &curDeleted); err != nil {
+			return 0, err
+		}
+		needsUpdate := curSlug != slug || curDeleted.Valid
+		if !needsUpdate {
+			if bs, ok := br.(string); ok && curBranch.String != bs {
+				needsUpdate = true
+			}
+		}
+		if !needsUpdate {
+			if ads, ok := ad.(string); ok && curAdmin.String != ads {
+				needsUpdate = true
+			}
+		}
+		if !needsUpdate {
+			return id, nil
+		}
 		if _, err := s.DB.ExecContext(ctx, `
 			UPDATE worktrees
 			SET slug = ?,
