@@ -403,6 +403,13 @@ func wtWait() *cli.Command {
 // pollFinalize polls the event log every 500ms until the worktree's
 // finalize completes (success → nil), fails (error event → error) or the
 // deadline passes (timeout → error).
+//
+// On a real terminal (and not --quiet) each tick re-renders one wait
+// line in place: a spinner, elapsed/timeout, and the newest prepare /
+// hook event message seen since the anchor — so a 10-minute default
+// wait isn't a frozen prompt (#54). --quiet and piped stderr keep the
+// byte-identical initial-info + final-result pair CI consumers rely
+// on.
 func pollFinalize(
 	ctx context.Context,
 	st *store.Store,
@@ -412,14 +419,27 @@ func pollFinalize(
 	timeout time.Duration,
 	quiet bool,
 ) error {
+	started := time.Now()
+	spinner := !quiet && ui.IsStderrTTY()
+	finishSpinner := func() {
+		if spinner {
+			ui.EraseLine()
+		}
+	}
+	frame := 0
+	var lastPhase string
+	lastPhaseMs := int64(0)
+
 	tick := time.NewTicker(500 * time.Millisecond)
 	defer tick.Stop()
 	for {
 		if time.Now().After(deadline) {
+			finishSpinner()
 			return fmt.Errorf("timed out after %s", timeout)
 		}
 		select {
 		case <-ctx.Done():
+			finishSpinner()
 			return ctx.Err()
 		case <-tick.C:
 		}
@@ -431,20 +451,57 @@ func pollFinalize(
 			Limit:       50,
 		})
 		if err != nil {
+			finishSpinner()
 			return err
 		}
 		for _, e := range rows {
 			if e.EventType == store.EvtWorktreeCreateEnd {
+				finishSpinner()
 				if !quiet {
 					ui.Success("finalize complete for %s", wt.Slug)
 				}
 				return nil
 			}
 			if e.EventType == store.EvtWorktreeCreateError && e.Level == store.LevelError {
+				finishSpinner()
 				return fmt.Errorf("finalize failed: %s", e.Message)
 			}
 		}
+		if spinner {
+			// Newest prepare/hook event since the anchor feeds the
+			// status segment; a newer event replaces the message, an
+			// equal timestamp keeps it (idempotent re-read).
+			if phase, ms := newestProgressEvent(ctx, st, wt.ID, anchor); ms > lastPhaseMs {
+				lastPhase, lastPhaseMs = phase, ms
+			}
+			remaining := time.Until(deadline)
+			line := fmt.Sprintf("%s waiting for finalize on %s — elapsed %s, timeout in %s",
+				ui.Cyan(ui.SpinnerFrames[frame%len(ui.SpinnerFrames)]),
+				wt.Slug, time.Since(started).Round(time.Second), remaining.Round(time.Second))
+			if lastPhase != "" {
+				line += " — " + lastPhase
+			}
+			ui.EraseLine()
+			_, _ = fmt.Fprint(ui.Err, ui.Dim(ui.Truncate(line, ui.TermWidth())))
+			frame++
+		}
 	}
+}
+
+// newestProgressEvent returns the newest prepare:phase / hooks:start /
+// hooks:end message for the worktree since `anchor` (with its ts), or
+// "" when none exists yet.
+func newestProgressEvent(ctx context.Context, st *store.Store, wtID, anchor int64) (string, int64) {
+	rows, err := st.QueryEvents(ctx, store.EventFilter{
+		WorktreeID: wtID,
+		EventTypes: []string{store.EvtPreparePhase, store.EvtHooksStart, store.EvtHooksEnd},
+		SinceMs:    anchor,
+		Limit:      1,
+	})
+	if err != nil || len(rows) == 0 {
+		return "", 0
+	}
+	return rows[0].Message, rows[0].Ts
 }
 
 // worktreeRow is a slim record returned by loadWorktreeRow.

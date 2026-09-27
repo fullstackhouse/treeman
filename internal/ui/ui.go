@@ -278,3 +278,22 @@ func fprintln(w io.Writer, msg string) {
 func IsTTY() bool {
 	return isatty.IsTerminal(os.Stdout.Fd()) || isatty.IsCygwinTerminal(os.Stdout.Fd())
 }
+
+// IsStderrTTY reports whether stderr is attached to a terminal. Live-
+// rendered progress (the `wt wait` spinner) only makes sense on a
+// real terminal; piped stderr must stay machine-parseable, so callers
+// gate their redraws on this.
+func IsStderrTTY() bool {
+	return isatty.IsTerminal(os.Stderr.Fd()) || isatty.IsCygwinTerminal(os.Stderr.Fd())
+}
+
+// SpinnerFrames is the braille animation cycle for inline wait lines
+// (e.g. pollFinalize's live `wt wait` status). Indexed modulo len.
+var SpinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+// EraseLine rewinds the cursor to the column start and wipes the
+// current line on stderr — the redraw primitive behind spinner-style
+// in-place updates. Only meaningful on a TTY (see IsStderrTTY).
+func EraseLine() {
+	_, _ = fmt.Fprint(Err, "\r\x1b[2K")
+}
