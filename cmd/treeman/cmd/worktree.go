@@ -390,6 +390,17 @@ func deleteWorktreeTarget(ctx context.Context, c *cli.Command, repoRoot, target 
 		}
 	}
 
+	// Name the resolved target before anything destructive happens —
+	// a clean worktree fires no confirmation, so without this line a
+	// wrong-slug delete is only discoverable afterwards via wt list.
+	if branch, berr := gitcmd.String(ctx, wtPath, "rev-parse", "--abbrev-ref", "HEAD"); berr == nil && branch != "" {
+		PrintInfo("deleting %s (branch %s) — DBs + git worktree will be dropped; follow: treeman worktree logs %s --follow",
+			wtPath, branch, filepath.Base(wtPath))
+	} else {
+		PrintInfo("deleting %s — DBs + git worktree will be dropped; follow: treeman worktree logs %s --follow",
+			wtPath, filepath.Base(wtPath))
+	}
+
 	_, err := wt.Delete(ctx, wt.DeleteRequest{
 		RepoRoot: repoRoot,
 		Target:   target,

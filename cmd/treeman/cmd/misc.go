@@ -859,13 +859,13 @@ func DaemonCmd() *cli.Command {
 		Usage: "daemon lifecycle",
 		Commands: []*cli.Command{
 			{
-				Name:  "start",
-				Usage: "start treemand in the background (no-op when already running)",
+				Name:   "start",
+				Usage:  "start treemand in the background (no-op when already running)",
 				Action: daemonStart,
 			},
 			{
-				Name:  "stop",
-				Usage: "request a graceful treemand shutdown",
+				Name:   "stop",
+				Usage:  "request a graceful treemand shutdown",
 				Action: daemonStop,
 			},
 			{
@@ -877,9 +877,9 @@ func DaemonCmd() *cli.Command {
 				Action: daemonReload,
 			},
 			{
-				Name:  "status",
-				Usage: "show whether treemand is running (pid, version, watchers)",
-				Flags: []cli.Flag{&cli.BoolFlag{Name: "json"}},
+				Name:   "status",
+				Usage:  "show whether treemand is running (pid, version, watchers)",
+				Flags:  []cli.Flag{&cli.BoolFlag{Name: "json"}},
 				Action: daemonStatus,
 			},
 			{
@@ -889,8 +889,8 @@ func DaemonCmd() *cli.Command {
 				Action: daemonState,
 			},
 			{
-				Name:  "install",
-				Usage: "install + enable the treemand auto-start unit (systemd user service on Linux, launchd on macOS)",
+				Name:   "install",
+				Usage:  "install + enable the treemand auto-start unit (systemd user service on Linux, launchd on macOS)",
 				Action: daemonInstall,
 			},
 			{

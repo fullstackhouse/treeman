@@ -342,13 +342,19 @@ func TestWtDeleteDispatch(t *testing.T) {
 	// "queued/teardown" status line — that's what the cd-substitution
 	// shell shim depends on for the early-return contract.
 	e := newEnv(t)
-	repo, _, _ := makeWorktreeFixture(t, e)
+	repo, wtA, _ := makeWorktreeFixture(t, e)
 	res := e.run(t, repo, "worktree", "delete", "--force", "feat_a")
 	combined := res.stdout + res.stderr
 	if !strings.Contains(combined, "queued") && !strings.Contains(combined, "teardown") &&
 		!strings.Contains(combined, "daemon") {
 		t.Errorf("wt delete should mention queued/teardown/daemon status:\nstdout:\n%s\nstderr:\n%s",
 			res.stdout, res.stderr)
+	}
+	// A clean worktree gets no confirmation, so the announcement line
+	// naming the resolved target is the only pre-teardown output.
+	if !strings.Contains(combined, "deleting "+wtA) {
+		t.Errorf("wt delete should announce the resolved target %q:\nstdout:\n%s\nstderr:\n%s",
+			wtA, res.stdout, res.stderr)
 	}
 }
 
