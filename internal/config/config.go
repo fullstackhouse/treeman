@@ -1441,6 +1441,22 @@ type DatabaseConfig struct {
 	// 0 (off). Mutually exclusive with `branch_scoped`.
 	Prewarm uint32 `yaml:"prewarm,omitempty" jsonschema:"minimum=0,maximum=16"`
 
+	// PhysicalCloneMinBytes is the MySQL-only source-size floor (in
+	// bytes) at or above which snapshots switch from the logical
+	// INSERT…SELECT loader to InnoDB transferable tablespaces. Below
+	// the floor logical is faster (physical pays a fixed per-table
+	// FLUSH/copy/IMPORT cost that dominates for many-small-tables
+	// schemas); at or above it physical wins because tablespaces copy
+	// at disk speed instead of row speed. Raise it when physical
+	// clone's per-table overhead swamps a wide-and-tiny schema even at
+	// size; lower it to take the disk-speed win earlier on a large
+	// dataset. Default 1073741824 (1 GiB). The TREEMAN_MYSQL_PHYSICAL_MIN_BYTES
+	// env var overrides this key (config < env) — e2e tests set it to 0
+	// to exercise the physical path on small fixtures. Rejected at
+	// config load for non-MySQL engines so the knob never reads as
+	// dead config.
+	PhysicalCloneMinBytes *int64 `yaml:"physical_clone_min_bytes,omitempty" jsonschema:"minimum=0"`
+
 	// BranchScoped turns this database into a git-for-databases
 	// working copy: the app always talks to one stable ACTIVE
 	// namespace, while treeman keeps a DURABLE per-branch copy of its

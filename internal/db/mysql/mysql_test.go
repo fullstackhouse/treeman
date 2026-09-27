@@ -14,6 +14,12 @@ import (
 // The ORDER BY in the production query is what guarantees the order
 // reaching scanColumnsByTable; here the caller controls insertion +
 // SELECT order to stand in for that guarantee.
+// rowsFromPairs builds a real *sql.Rows yielding (table_name,
+// column_name) in the given order, so scanColumnsByTable can be
+// exercised exactly as it is against MySQL — without needing one.
+// The ORDER BY in the production query is what guarantees the order
+// reaching scanColumnsByTable; here the caller controls insertion +
+// SELECT order to stand in for that guarantee.
 func rowsFromPairs(t *testing.T, pairs [][2]string) (*sql.Rows, func()) {
 	t.Helper()
 	db, err := sql.Open("sqlite", ":memory:")
@@ -89,4 +95,46 @@ func TestScanColumnsByTable_SingleColumnTable(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %#v want %#v", got, want)
 	}
+}
+
+// TestPhysicalCloneMinBytes pins the threshold resolution order: the
+// TREEMAN_MYSQL_PHYSICAL_MIN_BYTES env var (kept for e2e + ad-hoc
+// tuning) overrides the database's configured
+// `physical_clone_min_bytes`, which overrides the 1 GiB default.
+func TestPhysicalCloneMinBytes(t *testing.T) {
+	t.Run("default is 1 GiB", func(t *testing.T) {
+		d := &Driver{}
+		if got := d.physicalCloneMinBytes(); got != defaultPhysicalCloneMinBytes {
+			t.Fatalf("got %d, want %d", got, defaultPhysicalCloneMinBytes)
+		}
+	})
+
+	t.Run("configured threshold wins over default", func(t *testing.T) {
+		zero := int64(0)
+		d := &Driver{}
+		d.SetPhysicalCloneMinBytes(&zero)
+		if got := d.physicalCloneMinBytes(); got != 0 {
+			t.Fatalf("got %d, want 0 (0 must stay reachable: it forces the physical path)", got)
+		}
+	})
+
+	t.Run("env var overrides the configured threshold", func(t *testing.T) {
+		t.Setenv("TREEMAN_MYSQL_PHYSICAL_MIN_BYTES", "4096")
+		configured := int64(1 << 20)
+		d := &Driver{}
+		d.SetPhysicalCloneMinBytes(&configured)
+		if got := d.physicalCloneMinBytes(); got != 4096 {
+			t.Fatalf("got %d, want 4096", got)
+		}
+	})
+
+	t.Run("unparseable env var falls through to config", func(t *testing.T) {
+		t.Setenv("TREEMAN_MYSQL_PHYSICAL_MIN_BYTES", "not-a-number")
+		configured := int64(1 << 20)
+		d := &Driver{}
+		d.SetPhysicalCloneMinBytes(&configured)
+		if got := d.physicalCloneMinBytes(); got != 1<<20 {
+			t.Fatalf("got %d, want %d", got, int64(1<<20))
+		}
+	})
 }

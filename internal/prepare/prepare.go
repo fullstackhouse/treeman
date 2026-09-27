@@ -733,6 +733,7 @@ func prepareMySQL(
 	if err != nil {
 		return Outcome{}, err
 	}
+	drv.SetPhysicalCloneMinBytes(d.PhysicalCloneMinBytes)
 	defer func() { _ = drv.Close() }()
 
 	// Probe keys need only the engine family: a config carries at most

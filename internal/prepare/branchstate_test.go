@@ -661,7 +661,7 @@ func TestConnectBranchEngineMissingConn(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.engine, func(t *testing.T) {
-			eng, closeFn, err := connectBranchEngine(ctx, &config.Config{}, c.engine, nil)
+			eng, closeFn, err := connectBranchEngine(ctx, &config.Config{}, c.engine, nil, nil)
 			if err == nil || err.Error() != c.want {
 				t.Fatalf("err = %v, want %q", err, c.want)
 			}
@@ -687,7 +687,7 @@ func TestConnectBranchEngineUnswappable(t *testing.T) {
 	ctx := context.Background()
 	for _, engine := range []string{"sqlite", "", "made-up"} {
 		t.Run(engine, func(t *testing.T) {
-			eng, closeFn, err := connectBranchEngine(ctx, &config.Config{}, engine, nil)
+			eng, closeFn, err := connectBranchEngine(ctx, &config.Config{}, engine, nil, nil)
 			if err != nil {
 				t.Fatalf("unswappable engine must not error, got %v", err)
 			}

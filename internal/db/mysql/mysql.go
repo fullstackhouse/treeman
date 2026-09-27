@@ -57,6 +57,12 @@ type Driver struct {
 	// clone in one fan-out wave, so the Nth call shouldn't re-query it.
 	strategyCacheMu sync.Mutex
 	strategyCache   map[string]CloneStrategy
+
+	// physicalMinBytes carries the database's configured
+	// `physical_clone_min_bytes` override (nil = package default).
+	// Written once by SetPhysicalCloneMinBytes immediately after
+	// Connect, before the driver is shared with any goroutine.
+	physicalMinBytes *int64
 }
 
 // LastCloneStrategy returns the CloneStrategy used by the most recent
@@ -315,17 +321,29 @@ func (d *Driver) SnapshotCreate(ctx context.Context, source, template string) er
 // (cheap when tables are small). 1 GiB is deliberately conservative.
 const defaultPhysicalCloneMinBytes int64 = 1 << 30
 
-// physicalCloneMinBytes returns the threshold, honoring an optional
-// TREEMAN_MYSQL_PHYSICAL_MIN_BYTES override. The env var is an internal
-// tuning/test hook (not a documented config knob) — e2e tests set it to
-// 0 to exercise the physical path on small fixtures.
-func physicalCloneMinBytes() int64 {
+// physicalCloneMinBytes resolves the threshold: the
+// TREEMAN_MYSQL_PHYSICAL_MIN_BYTES env var wins over the database's
+// configured `physical_clone_min_bytes`, which wins over the package
+// default (config < env — e2e tests force the physical path via the
+// env var).
+func (d *Driver) physicalCloneMinBytes() int64 {
 	if v := os.Getenv("TREEMAN_MYSQL_PHYSICAL_MIN_BYTES"); v != "" {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
 			return n
 		}
 	}
+	if d.physicalMinBytes != nil {
+		return *d.physicalMinBytes
+	}
 	return defaultPhysicalCloneMinBytes
+}
+
+// SetPhysicalCloneMinBytes installs the database's configured
+// `physical_clone_min_bytes` threshold; nil leaves the default in
+// place. Call right after Connect, before the driver reaches any
+// SnapshotCreate.
+func (d *Driver) SetPhysicalCloneMinBytes(n *int64) {
+	d.physicalMinBytes = n
 }
 
 // PreferLogicalFor reports whether the auto strategy selector picks
@@ -354,7 +372,7 @@ func (d *Driver) chooseStrategy(ctx context.Context, db string) CloneStrategy {
 
 	bytes, err := d.sourceDataBytes(ctx, db)
 	s := CloneStrategyLogical
-	if err == nil && bytes >= physicalCloneMinBytes() {
+	if err == nil && bytes >= d.physicalCloneMinBytes() {
 		s = CloneStrategyPhysical
 	}
 

@@ -194,6 +194,7 @@ databases:
       key_prefix: '...'
       fanout: 0
       prewarm: 0
+      physical_clone_min_bytes: 0
       branch_scoped: false
 # Lifecycle hooks fired around worktree create/delete/checkout and
 hooks:
@@ -729,6 +730,25 @@ with their template on snapshot eviction. Range 0–16; default
 0 (off). Mutually exclusive with `branch_scoped`.
 
 _min: 0 · max: 16_
+
+#### `physical_clone_min_bytes` *(integer)*
+
+PhysicalCloneMinBytes is the MySQL-only source-size floor (in
+bytes) at or above which snapshots switch from the logical
+INSERT…SELECT loader to InnoDB transferable tablespaces. Below
+the floor logical is faster (physical pays a fixed per-table
+FLUSH/copy/IMPORT cost that dominates for many-small-tables
+schemas); at or above it physical wins because tablespaces copy
+at disk speed instead of row speed. Raise it when physical
+clone's per-table overhead swamps a wide-and-tiny schema even at
+size; lower it to take the disk-speed win earlier on a large
+dataset. Default 1073741824 (1 GiB). The TREEMAN_MYSQL_PHYSICAL_MIN_BYTES
+env var overrides this key (config < env) — e2e tests set it to 0
+to exercise the physical path on small fixtures. Rejected at
+config load for non-MySQL engines so the knob never reads as
+dead config.
+
+_min: 0_
 
 #### `branch_scoped` *(boolean)*
 

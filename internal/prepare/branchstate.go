@@ -550,7 +550,13 @@ func siblingKeep(siblings []string) func(string) bool {
 // BUT log a warning so a typo'd engine name doesn't disappear
 // without a trace. Same observability principle as TeardownDatabases'
 // unknown-engine arm.
-func connectBranchEngine(ctx context.Context, cfg *config.Config, eng string, siblings []string) (*branchEngine, func(), error) {
+func connectBranchEngine(
+	ctx context.Context,
+	cfg *config.Config,
+	eng string,
+	siblings []string,
+	minPhysicalCloneBytes *int64,
+) (*branchEngine, func(), error) {
 	scope, label, ok := branchScopeFor(eng)
 	if !ok {
 		slog.Warn("connect branch engine: skipping unrecognised engine",
@@ -566,6 +572,7 @@ func connectBranchEngine(ctx context.Context, cfg *config.Config, eng string, si
 		if err != nil {
 			return nil, func() {}, err
 		}
+		drv.SetPhysicalCloneMinBytes(minPhysicalCloneBytes)
 		return &branchEngine{drv: mysqlNS{drv}, scope: scope, engine: label}, func() { _ = drv.Close() }, nil
 	case "postgres":
 		if cfg.Connections.Postgres == nil {
@@ -1365,7 +1372,7 @@ func teardownBranchScoped(
 	if err != nil {
 		return err
 	}
-	eng, closeEng, cerr := connectBranchEngine(ctx, cfg, d.Engine, siblingSlugs(ctx, st, repoID, worktreeID))
+	eng, closeEng, cerr := connectBranchEngine(ctx, cfg, d.Engine, siblingSlugs(ctx, st, repoID, worktreeID), d.PhysicalCloneMinBytes)
 	if cerr != nil {
 		return cerr
 	}
@@ -1426,7 +1433,7 @@ func ResetBranchScoped(
 		if err != nil {
 			return fmt.Errorf("render active namespace for %s: %w", d.Engine, err)
 		}
-		eng, closeEng, cerr := connectBranchEngine(ctx, cfg, d.Engine, siblingSlugs(ctx, st, repoID, worktreeID))
+		eng, closeEng, cerr := connectBranchEngine(ctx, cfg, d.Engine, siblingSlugs(ctx, st, repoID, worktreeID), d.PhysicalCloneMinBytes)
 		if cerr != nil {
 			return cerr
 		}
@@ -1520,7 +1527,7 @@ func SaveBranchScoped(
 		if err != nil {
 			return saves, fmt.Errorf("render active namespace for %s: %w", d.Engine, err)
 		}
-		eng, closeEng, cerr := connectBranchEngine(ctx, cfg, d.Engine, siblingSlugs(ctx, st, repoID, worktreeID))
+		eng, closeEng, cerr := connectBranchEngine(ctx, cfg, d.Engine, siblingSlugs(ctx, st, repoID, worktreeID), d.PhysicalCloneMinBytes)
 		if cerr != nil {
 			return saves, cerr
 		}
@@ -1647,7 +1654,7 @@ func BranchScopedStatus(
 		// Status only probes hash-derived durable namespaces (and reads the
 		// marker), never enumerates or drops the active prefix — so no
 		// sibling filter is needed.
-		eng, closeEng, cerr := connectBranchEngine(ctx, cfg, d.Engine, nil)
+		eng, closeEng, cerr := connectBranchEngine(ctx, cfg, d.Engine, nil, d.PhysicalCloneMinBytes)
 		if cerr != nil {
 			return nil, cerr
 		}

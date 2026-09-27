@@ -358,6 +358,7 @@ func (d DatabaseConfig) validate(path string) error {
 	}
 
 	errs = append(errs, d.validatePrewarm(path)...)
+	errs = append(errs, d.validatePhysicalCloneMinBytes(path)...)
 	return errors.Join(errs...)
 }
 
@@ -381,6 +382,26 @@ func (d DatabaseConfig) validatePrewarm(path string) []error {
 			"%s: branch_scoped and prewarm are mutually exclusive — branch_scoped databases bypass the template cache that spares are cloned from",
 			path,
 		))
+	}
+	return errs
+}
+
+// validatePhysicalCloneMinBytes guards `databases[].physical_clone_min_bytes`.
+// The threshold only feeds MySQL's physical-vs-logical strategy probe;
+// reject rather than silently ignore on other engines so the knob
+// never reads as dead config.
+func (d DatabaseConfig) validatePhysicalCloneMinBytes(path string) []error {
+	if d.PhysicalCloneMinBytes == nil {
+		return nil
+	}
+	var errs []error
+	if fam, ok := engine.Canonical(d.Engine); !ok || fam != engine.FamilyMySQL {
+		errs = append(errs, fmt.Errorf(
+			"%s: physical_clone_min_bytes is mysql-only — engine %q has no physical clone path",
+			path, d.Engine))
+	}
+	if *d.PhysicalCloneMinBytes < 0 {
+		errs = append(errs, fmt.Errorf("%s: physical_clone_min_bytes must be >= 0", path))
 	}
 	return errs
 }

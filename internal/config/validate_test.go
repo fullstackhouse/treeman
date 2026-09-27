@@ -5,6 +5,15 @@ import (
 	"testing"
 )
 
+// Shared pointers for DatabaseConfig.PhysicalCloneMinBytes cases —
+// the field is *int64 so config can distinguish "unset" from 0
+// ("always attempt the physical clone path").
+var (
+	zeroInt64 = int64(0)
+	someInt64 = int64(1 << 20)
+	negInt64  = int64(-1)
+)
+
 func TestValidate(t *testing.T) {
 	cases := []struct {
 		name string
@@ -189,6 +198,50 @@ func TestValidate(t *testing.T) {
 				}},
 			},
 			want: "branch_scoped and prewarm are mutually exclusive",
+		},
+		{
+			name: "physical_clone_min_bytes on mysql is valid",
+			cfg: Config{
+				Databases: []DatabaseConfig{{
+					Engine:                "mysql",
+					NameTemplate:          "app_{slug}",
+					PhysicalCloneMinBytes: &zeroInt64,
+				}},
+			},
+			want: "",
+		},
+		{
+			name: "physical_clone_min_bytes accepts an alias engine",
+			cfg: Config{
+				Databases: []DatabaseConfig{{
+					Engine:                "mariadb",
+					NameTemplate:          "app_{slug}",
+					PhysicalCloneMinBytes: &someInt64,
+				}},
+			},
+			want: "",
+		},
+		{
+			name: "physical_clone_min_bytes rejects non-mysql engines",
+			cfg: Config{
+				Databases: []DatabaseConfig{{
+					Engine:                "postgres",
+					NameTemplate:          "app_{slug}",
+					PhysicalCloneMinBytes: &someInt64,
+				}},
+			},
+			want: "physical_clone_min_bytes is mysql-only",
+		},
+		{
+			name: "physical_clone_min_bytes rejects negatives",
+			cfg: Config{
+				Databases: []DatabaseConfig{{
+					Engine:                "mysql",
+					NameTemplate:          "app_{slug}",
+					PhysicalCloneMinBytes: &negInt64,
+				}},
+			},
+			want: "physical_clone_min_bytes must be >= 0",
 		},
 		{
 			name: "branch_scoped + main_worktree.enabled with no overlay rejects slug-bearing main name",
