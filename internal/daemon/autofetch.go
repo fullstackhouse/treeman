@@ -250,13 +250,17 @@ func SyncRepo(ctx context.Context, st *State, r store.RepoRef, cfg *config.Confi
 
 	// After the mainline branch has advanced, prune local branches whose
 	// upstream was deleted and that are provably merged, then reap the
-	// branch_scoped durable databases those deleted branches left behind.
+	// branch_scoped durable databases those deleted branches left behind
+	// — in ONE batched pass (one worktree listing + one engine connect
+	// per branch_scoped DB, not per branch, #72).
 	pruned := pruneGoneLocals(ctx, r.Path)
-	for _, branch := range pruned {
-		prepare.ReapBranchDurables(ctx, cfg, st.Store, r.ID, branch)
-		_ = st.Store.WriteEvent(ctx, store.LevelInfo, store.EvtBranchPrune,
-			"pruned merged branch with deleted upstream: "+branch,
-			r.ID, 0, "", 0, map[string]string{"branch": branch})
+	if len(pruned) > 0 {
+		prepare.ReapBranchDurablesMany(ctx, cfg, st.Store, r.ID, pruned)
+		for _, branch := range pruned {
+			_ = st.Store.WriteEvent(ctx, store.LevelInfo, store.EvtBranchPrune,
+				"pruned merged branch with deleted upstream: "+branch,
+				r.ID, 0, "", 0, map[string]string{"branch": branch})
+		}
 	}
 
 	// The catch-all reapers only have work to do when the repo's refs

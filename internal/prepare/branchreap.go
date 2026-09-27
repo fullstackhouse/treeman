@@ -31,6 +31,26 @@ func ReapBranchDurables(ctx context.Context, cfg *config.Config, st *store.Store
 	if branch == "" {
 		return
 	}
+	ReapBranchDurablesMany(ctx, cfg, st, repoID, []string{branch})
+}
+
+// ReapBranchDurablesMany is the batched form of ReapBranchDurables:
+// a mass prune of P branches costs ONE worktree listing, ONE
+// main-worktree overlay, and ONE engine connect per branch_scoped
+// database — the per-branch shape paid P listings and P connects, and
+// PxDxW serial catalog probes either way. Drops, row deletions and
+// branch_reap events are identical to calling the single-branch
+// reaper P times (#72).
+func ReapBranchDurablesMany(ctx context.Context, cfg *config.Config, st *store.Store, repoID int64, branches []string) {
+	filtered := make([]string, 0, len(branches))
+	for _, b := range branches {
+		if b != "" {
+			filtered = append(filtered, b)
+		}
+	}
+	if len(filtered) == 0 {
+		return
+	}
 	worktrees, err := st.ListWorktreesForRepo(ctx, repoID)
 	if err != nil {
 		slog.Warn("reap durables: list worktrees", "repo_id", repoID, "err", err)
@@ -68,6 +88,7 @@ func ReapBranchDurables(ctx context.Context, cfg *config.Config, st *store.Store
 			closeEng()
 			continue
 		}
+		targets := make([]reapTarget, 0, len(worktrees))
 		for _, wt := range worktrees {
 			dbForWt := d
 			if wt.IsMain && i < len(mainCfg.Databases) {
@@ -77,7 +98,35 @@ func ReapBranchDurables(ctx context.Context, cfg *config.Config, st *store.Store
 			if err != nil {
 				continue
 			}
-			dur := eng.durable(active, branch)
+			targets = append(targets, reapTarget{wtID: wt.ID, active: active})
+		}
+		reapViaEngine(ctx, eng, st, repoID, targets, filtered)
+		closeEng()
+	}
+}
+
+// reapTarget pairs a worktree row id with the active namespace name
+// rendered for it under one branch_scoped database.
+type reapTarget struct {
+	wtID   int64
+	active string
+}
+
+// reapViaEngine probes and drops every (target x branch) durable pair
+// through one already-connected engine, writing the row deletion + the
+// branch_reap event per drop. Shared by the single-branch and batched
+// reapers so their observable behavior cannot drift.
+func reapViaEngine(
+	ctx context.Context,
+	eng *branchEngine,
+	st *store.Store,
+	repoID int64,
+	targets []reapTarget,
+	branches []string,
+) {
+	for _, tgt := range targets {
+		for _, branch := range branches {
+			dur := eng.durable(tgt.active, branch)
 			exists, err := eng.drv.Exists(ctx, dur)
 			if err != nil {
 				slog.Warn("reap durables: probe", "engine", eng.engine, "durable", dur, "err", err)
@@ -93,15 +142,14 @@ func ReapBranchDurables(ctx context.Context, cfg *config.Config, st *store.Store
 			}
 			_ = st.DeleteBranchDurable(ctx, repoID, dur)
 			_ = st.WriteEvent(ctx, store.LevelInfo, store.EvtBranchReap,
-				fmt.Sprintf("%s: dropped durable for deleted branch %q (active=%s)", eng.engine, branch, active),
-				repoID, wt.ID, "", 0, map[string]string{
+				fmt.Sprintf("%s: dropped durable for deleted branch %q (active=%s)", eng.engine, branch, tgt.active),
+				repoID, tgt.wtID, "", 0, map[string]string{
 					"engine":  eng.engine,
 					"branch":  branch,
 					"durable": dur,
-					"active":  active,
+					"active":  tgt.active,
 				})
 		}
-		closeEng()
 	}
 }
 
