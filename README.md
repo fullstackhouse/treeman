@@ -314,9 +314,10 @@ gwt() { local p; p=$(treeman worktree switch "$@") && [ -n "$p" ] && cd "$p"; }
 gcb() { local p; p=$(treeman git switch      "$@") && [ -n "$p" ] && cd "$p"; }
 ```
 
-A ready-to-source zsh shim that wraps `worktree go` / `worktree back`
-for `cd`-into-worktree UX lives at `contrib/tm.zsh` (exposes a `tm`
-shell function):
+A ready-to-source shim that wraps `worktree go` / `worktree back`
+for `cd`-into-worktree UX lives in `contrib/` (exposes a `tm`
+shell function): `tm.zsh`, `tm.bash`, and `tm.fish` share the same
+usage matrix.
 
 ```sh
 # In ~/.zshrc:
@@ -337,7 +338,7 @@ tm list              # passthrough to `treeman worktree list`
 
 | Page | What you'll find |
 |---|---|
-| [docs/cli.md](docs/cli.md) | Full command reference, log filters, completion, output/color/paging, env vars |
+| [docs/cli.md](docs/cli.md) | Full command reference, log filters, completion, shell integration, output/color/paging, env vars |
 | [docs/configuration.md](docs/configuration.md) | `.treeman.yaml` guide — every block, per-stack examples, templated names, hooks, credential resolution, container DBs |
 | [docs/config-reference.md](docs/config-reference.md) | Generated field-by-field `.treeman.yaml` reference (from the Go types) |
 | [docs/advanced.md](docs/advanced.md) | Snapshot cache + GC, framework presets |

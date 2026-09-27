@@ -1,0 +1,102 @@
+# treeman bash shim — `tm` shell wrapper around `treeman wt`.
+#
+# `treeman worktree go` + `treeman worktree back` print resolved paths on
+# stdout; this function wraps them so `tm foo` and `tm -` change
+# directory in the parent shell.
+#
+# Install: source this file from your .bashrc:
+#
+#     source /path/to/treeman/contrib/tm.bash
+#
+# Usage:
+#     tm PROJ-1234         # cd to existing worktree, or report missing
+#     tm PROJ-1234 -c      # create + cd to a new worktree
+#     tm -                 # cd back to main repo
+#     tm - --remove        # cd back + drop current wt (if clean)
+#     tm list              # passthrough to `treeman worktree list`
+#     tm new FOO           # passthrough; useful when --create needs flags
+#
+# All flags after the target name are forwarded to the underlying
+# `treeman worktree go`/`treeman worktree back` invocation.
+
+tm() {
+  if (( $# == 0 )); then
+    treeman worktree list
+    return $?
+  fi
+
+  case "$1" in
+    -|back)
+      shift
+      local main
+      if ! main=$(treeman worktree back "$@"); then
+        return $?
+      fi
+      [[ -n $main ]] && cd -- "$main"
+      return 0
+      ;;
+    list|ls)
+      shift
+      treeman worktree list "$@"
+      return $?
+      ;;
+    new|create)
+      shift
+      # `tm new BRANCH [...]` → forward to go --create so the
+      # cd-after-create UX is the same as the bare `tm BRANCH -c`
+      # form.
+      local branch="$1"
+      shift || true
+      local target
+      if ! target=$(treeman worktree go "$branch" --create "$@"); then
+        return $?
+      fi
+      [[ -n $target ]] && cd -- "$target"
+      return 0
+      ;;
+    -h|--help|help)
+      cat <<'USAGE'
+tm — treeman shim
+  tm <name>           cd to existing worktree
+  tm <name> -c        create + cd to new worktree
+  tm new <name>       same as `tm <name> -c`
+  tm - [--remove]     cd back to main repo (with --remove: drop current wt if clean)
+  tm list             list active worktrees
+USAGE
+      return 0
+      ;;
+  esac
+
+  local name="$1"
+  shift
+  # Translate the short `-c` flag to the long `--create` form the Go
+  # CLI exposes; everything else passes through.
+  local args=()
+  local want_create=0
+  while (( $# > 0 )); do
+    case "$1" in
+      -c|--create) want_create=1 ;;
+      *) args+=("$1") ;;
+    esac
+    shift
+  done
+  if (( want_create )); then
+    args+=(--create)
+  fi
+
+  local target
+  if ! target=$(treeman worktree go "$name" "${args[@]}"); then
+    return $?
+  fi
+  [[ -n $target ]] && cd -- "$target"
+}
+
+# Completion: complete worktree slugs from `treeman worktree list`.
+# NO_COLOR=1 suppresses ANSI escapes so the SLUG column parses cleanly.
+_tm_complete() {
+  local cur names
+  cur="${COMP_WORDS[COMP_CWORD]}"
+  mapfile -t names < <(NO_COLOR=1 treeman worktree list 2>/dev/null | awk 'NR>1 {print $2}')
+  COMPREPLY=($(compgen -W "${names[*]}" -- "$cur"))
+}
+complete -F _tm_complete tm

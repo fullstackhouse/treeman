@@ -1292,6 +1292,7 @@ func InitCmd() *cli.Command {
 			}
 			PrintHint("create a worktree:               treeman worktree create <branch>")
 			PrintHint("install JSON Schema (editors):   treeman schema install")
+			PrintHint("shell completions (one-time):    source <(treeman completion zsh)  # or bash/fish/pwsh")
 			return nil
 		},
 	}
