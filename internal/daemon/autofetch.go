@@ -139,33 +139,41 @@ func runAutoFetchSweep(ctx context.Context, st *State) {
 		return
 	}
 	now := time.Now()
+	// Repos sync concurrently under a bounded errgroup (#51): each
+	// SyncRepo blocks on its own `git fetch`, so a slow/VPN'd remote
+	// otherwise stretches the whole tick by its fetch time. The
+	// eligibility checks (opt-out, backoff+jitter) run inside the
+	// goroutine — they only read State under its own mutex.
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(8)
 	for _, r := range repos {
-		if ctx.Err() != nil {
-			return
-		}
-		// Per-repo opt-out. Resolved config is layered, so a repo's
-		// own `.treeman.yaml` can flip `auto_fetch.enabled: false`
-		// to skip just this repo while leaving the daemon-wide loop
-		// running for everything else.
-		cfg, err := resolve.LoadResolved(r.Path)
-		if err != nil {
-			slog.Warn("auto_fetch load cfg", "repo", r.Path, "err", err)
-			continue
-		}
-		if !cfg.AutoFetch.IsEnabled() {
-			slog.Debug("auto_fetch skip (repo disabled)", "repo", r.Path)
-			continue
-		}
-		// Backoff gate: an offline / auth-failing repo is parked for
-		// up to 1h, with jitter so the unlock time isn't perfectly
-		// aligned across repos.
-		until := st.SyncBackoffUntil(r.Path)
-		if !until.IsZero() && now.Add(repoJitter(r.Path)).Before(until) {
-			slog.Debug("auto_fetch skip (backoff)", "repo", r.Path, "until", until)
-			continue
-		}
-		_ = SyncRepo(ctx, st, r, &cfg)
+		g.Go(func() error {
+			// Per-repo opt-out. Resolved config is layered, so a repo's
+			// own `.treeman.yaml` can flip `auto_fetch.enabled: false`
+			// to skip just this repo while leaving the daemon-wide loop
+			// running for everything else.
+			cfg, err := resolve.LoadResolved(r.Path)
+			if err != nil {
+				slog.Warn("auto_fetch load cfg", "repo", r.Path, "err", err)
+				return nil
+			}
+			if !cfg.AutoFetch.IsEnabled() {
+				slog.Debug("auto_fetch skip (repo disabled)", "repo", r.Path)
+				return nil
+			}
+			// Backoff gate: an offline / auth-failing repo is parked for
+			// up to 1h, with jitter so the unlock time isn't perfectly
+			// aligned across repos.
+			until := st.SyncBackoffUntil(r.Path)
+			if !until.IsZero() && now.Add(repoJitter(r.Path)).Before(until) {
+				slog.Debug("auto_fetch skip (backoff)", "repo", r.Path, "until", until)
+				return nil
+			}
+			_ = SyncRepo(gctx, st, r, &cfg)
+			return nil
+		})
 	}
+	_ = g.Wait()
 }
 
 // SyncRepo runs `git fetch --all --prune` against r.Path and then

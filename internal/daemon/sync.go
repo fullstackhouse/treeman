@@ -54,30 +54,48 @@ func SyncNow(ctx context.Context, st *State, target string) ([]rpc.SyncRepoStatu
 		}
 	}
 
-	var errs []string
-	for _, r := range repos {
-		cfg, err := resolve.LoadResolved(r.Path)
-		if err != nil {
-			errs = append(errs, fmt.Sprintf("%s: load cfg: %v", r.Path, err))
-			continue
-		}
-		// Manual sync_now ignores per-repo opt-out *and* the backoff
-		// gate — the call is an explicit override.
-		if wtFilter == "" {
-			if err := SyncRepo(ctx, st, r, &cfg); err != nil {
-				errs = append(errs, fmt.Sprintf("%s: %v", r.Path, err))
+	// Per-repo syncs fan out across a bounded errgroup (#51): each one
+	// blocks on `git fetch --all --prune`, so one slow/VPN'd remote
+	// must not delay every later repo's sync by its fetch time. The
+	// State's backoff/fail maps are already mutex-guarded, and errors
+	// land in per-index slots, so there is no shared mutable state.
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(8)
+	errs := make([]string, len(repos))
+	for i, r := range repos {
+		g.Go(func() error {
+			cfg, err := resolve.LoadResolved(r.Path)
+			if err != nil {
+				errs[i] = fmt.Sprintf("%s: load cfg: %v", r.Path, err)
+				return nil
 			}
-			continue
-		}
-		// Targeted worktree: run fetch once, advance only the named wt.
-		if err := gitcmd.Run(ctx, r.Path, "fetch", "--all", "--prune", "--quiet"); err != nil {
-			st.RecordSyncFailure(r.Path, backoffFor(st.SyncFailCount(r.Path)+1))
-			errs = append(errs, fmt.Sprintf("%s: fetch: %v", r.Path, err))
-			continue
-		}
-		st.RecordSyncSuccess(r.Path)
-		_ = SyncWorktree(ctx, st, r.ID, wtFilter, cfg.AutoFetch.ResolvedMode())
+			// Manual sync_now ignores per-repo opt-out *and* the backoff
+			// gate — the call is an explicit override.
+			if wtFilter == "" {
+				if err := SyncRepo(gctx, st, r, &cfg); err != nil {
+					errs[i] = fmt.Sprintf("%s: %v", r.Path, err)
+				}
+				return nil
+			}
+			// Targeted worktree: run fetch once, advance only the named wt.
+			if err := gitcmd.Run(gctx, r.Path, "fetch", "--all", "--prune", "--quiet"); err != nil {
+				st.RecordSyncFailure(r.Path, backoffFor(st.SyncFailCount(r.Path)+1))
+				errs[i] = fmt.Sprintf("%s: fetch: %v", r.Path, err)
+				return nil
+			}
+			st.RecordSyncSuccess(r.Path)
+			_ = SyncWorktree(gctx, st, r.ID, wtFilter, cfg.AutoFetch.ResolvedMode())
+			return nil
+		})
 	}
+	_ = g.Wait()
+	filtered := make([]string, 0, len(errs))
+	for _, e := range errs {
+		if e != "" {
+			filtered = append(filtered, e)
+		}
+	}
+	errs = filtered
 	// Snapshot only the repos this call touched so the response shape
 	// matches the request scope. Passing "" here would leak status for
 	// every registered repo into a targeted sync_now's reply.
