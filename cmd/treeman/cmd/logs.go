@@ -388,7 +388,13 @@ func renderHookRunsTable(runs []store.HookRun, all bool) {
 			tbl.Row(id, ui.Dim(formatTs(h.StartedAt)), ui.Cyan(h.Phase), ui.Dim(group), exit, dur, cmd)
 		}
 	}
-	tbl.SetWidth(ui.TermWidth()).Render(nil)
+	// Same full-fidelity rule as the tail renderer: width-fitting that
+	// truncates the COMMAND column only happens on a real terminal;
+	// piped output keeps complete commands for grep + captures.
+	if ui.StdoutIsTerminal() {
+		tbl.SetWidth(ui.TermWidth())
+	}
+	tbl.Render(nil)
 }
 
 // renderHookLog writes the captured stdout+stderr for a hook_run id
@@ -698,9 +704,11 @@ func printEventStyled(style eventStyle, e store.Event) {
 	// event-type pad, worktree, phase) and the duration suffix are
 	// reserved first, and an overlong message gets an ellipsis instead
 	// of wrapping the rest of the line. JSON output (handled above)
-	// stays full-length.
+	// stays full-length, and so does PIPED output — the terminal width
+	// is unknown there, and a mid-message ellipsis breaks grep and
+	// captured CI logs (the #69 regression the logs e2e guards).
 	msg := e.Message
-	if !style.asJSON {
+	if !style.asJSON && ui.StdoutIsTerminal() {
 		budget := max(ui.TermWidth()-ui.Width(ts)-1-ui.Width(level)-1-24-ui.Width(wt)-ui.Width(phase)-1-ui.Width(dur)-ui.Width(payload), 10)
 		msg = ui.Truncate(msg, budget)
 	}

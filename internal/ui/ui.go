@@ -246,6 +246,16 @@ func TermWidth() int {
 	return defaultTermWidth
 }
 
+// StdoutIsTerminal reports whether styled output is going to a real
+// terminal. Width-fitting that throws data away (log-line message
+// truncation) is gated on this: piped and captured output must carry
+// full-length lines even though the width is unknown — grep and CI
+// logs break on a mid-message ellipsis — while table alignment keeps
+// the 80-column fallback.
+func StdoutIsTerminal() bool {
+	return isatty.IsTerminal(os.Stdout.Fd()) || isatty.IsCygwinTerminal(os.Stdout.Fd())
+}
+
 // Truncate cuts s to at most w display columns, ending with an
 // ellipsis when anything was cut. ANSI-aware: styled input keeps its
 // escape codes balanced so downstream width math stays correct.
