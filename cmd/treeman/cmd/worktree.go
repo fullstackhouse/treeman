@@ -138,7 +138,7 @@ func worktreeActionPicker(ctx context.Context, c *cli.Command, repoRoot string) 
 		}
 		// Same flow as `wt delete <path>`: the root command carries no
 		// --force/--yes, so the confirmations still apply.
-		return deleteWorktreeTarget(ctx, c, repoRoot, path)
+		return deleteWorktreeTarget(ctx, c, repoRoot, path, false)
 	case "show":
 		if path == "" {
 			return nil
@@ -455,13 +455,34 @@ Examples:
 					return nil
 				}
 				targets = picked
+				// The picker self-erases on exit, so echo what it
+				// concluded while it's still on the record — dim, on
+				// stderr, ahead of any prompt or teardown output.
+				names := make([]string, len(targets))
+				for i, t := range targets {
+					names[i] = filepath.Base(MustAbs(t))
+				}
+				ui.Hint("selected %d worktree(s): %s", len(targets), strings.Join(names, ", "))
+			}
+
+			// Batch confirmation: with several targets, hoist the
+			// dirty/unpushed probes out of the per-target loop so N
+			// risky picks cost ONE question instead of N sequential
+			// ones (#77). --yes skips everything, as before.
+			batchConfirmed := false
+			if len(targets) > 1 && !c.Bool("yes") {
+				confirmed, aborted := confirmBatchDelete(ctx, repoRoot, targets)
+				if aborted {
+					return nil
+				}
+				batchConfirmed = confirmed
 			}
 
 			// Each target is torn down independently: one failure (or
 			// one declined confirmation) must not strand the rest.
 			var errs []error
 			for _, target := range targets {
-				if derr := deleteWorktreeTarget(ctx, c, repoRoot, target); derr != nil {
+				if derr := deleteWorktreeTarget(ctx, c, repoRoot, target, batchConfirmed); derr != nil {
 					errs = append(errs, derr)
 				}
 			}
@@ -470,10 +491,63 @@ Examples:
 	}
 }
 
+// confirmBatchDelete hoists the dirty/unpushed probes for a
+// multi-target delete into one danger-styled confirmation. Every
+// target with unregenerable state (uncommitted changes, unpushed
+// commits) gets a line naming the worktree, its branch, and its
+// reasons; a single ConfirmYes then covers the whole batch. Returns
+// (confirmed, aborted): confirmed skips the per-target prompts, and
+// aborted means the user declined — everything stays intact.
+// All-clean batches return (false, false): nothing risky, so the
+// delete proceeds without ceremony, exactly like the single-target
+// path.
+func confirmBatchDelete(ctx context.Context, repoRoot string, targets []string) (confirmed, aborted bool) {
+	type finding struct {
+		path, branch string
+		reasons      []string
+	}
+	var findings []finding
+	for _, target := range targets {
+		wtPath := MustAbs(target)
+		if p, ok := wt.LookupWorktree(ctx, repoRoot, target, cliSink{}); ok {
+			wtPath = p
+		}
+		var reasons []string
+		if dirty, _ := gitenv.HasWorkingTreeChanges(ctx, wtPath); dirty {
+			reasons = append(reasons, "uncommitted changes")
+		}
+		if unpushed, _ := gitenv.HasUnpushedCommits(ctx, wtPath); unpushed {
+			reasons = append(reasons, "unpushed commits")
+		}
+		if len(reasons) == 0 {
+			continue
+		}
+		branch, _ := gitcmd.String(ctx, wtPath, "rev-parse", "--abbrev-ref", "HEAD")
+		findings = append(findings, finding{path: wtPath, branch: branch, reasons: reasons})
+	}
+	if len(findings) == 0 {
+		return false, false
+	}
+	_, _ = fmt.Fprintln(ui.Err, ui.Red(fmt.Sprintf("destroying %d worktree(s) with unregenerable state:", len(findings))))
+	for _, f := range findings {
+		label := f.path
+		if f.branch != "" {
+			label = fmt.Sprintf("%s (%s)", f.path, f.branch)
+		}
+		_, _ = fmt.Fprintf(ui.Err, "  %s — %s\n", label, strings.Join(f.reasons, ", "))
+	}
+	if !ui.ConfirmYes(fmt.Sprintf("destroy these %d worktrees?", len(findings))) {
+		PrintInfo("aborted: all %d worktrees left intact", len(targets))
+		return false, true
+	}
+	return true, false
+}
+
 // deleteWorktreeTarget tears down one worktree named by path, branch or
 // slug: the cwd refusal, the dirty/unpushed confirmation, then the
-// delete itself.
-func deleteWorktreeTarget(ctx context.Context, c *cli.Command, repoRoot, target string) error {
+// delete itself. preConfirmed suppresses the per-target confirmation
+// (the multi-target batch prompt already covered it).
+func deleteWorktreeTarget(ctx context.Context, c *cli.Command, repoRoot, target string, preConfirmed bool) error {
 	// Confirmation lives in the CLI — wt.Delete itself is
 	// non-interactive. Resolve the wtPath up front so the
 	// prompt can name the target precisely; this duplicates
@@ -502,7 +576,7 @@ func deleteWorktreeTarget(ctx context.Context, c *cli.Command, repoRoot, target 
 	// regenerable. Only uncommitted changes / unpushed commits
 	// warrant a stop, and then as a default-yes warning naming
 	// the reason.
-	if !c.Bool("yes") {
+	if !c.Bool("yes") && !preConfirmed {
 		var reasons []string
 		if dirty, _ := gitenv.HasWorkingTreeChanges(ctx, wtPath); dirty {
 			reasons = append(reasons, "uncommitted changes")

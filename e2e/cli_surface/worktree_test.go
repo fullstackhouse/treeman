@@ -446,6 +446,71 @@ func TestWtDeleteConfirmNonTTY(t *testing.T) {
 	}
 }
 
+// TestWtDeleteBatchConfirm pins the multi-target confirmation (#77):
+// two dirty targets non-interactively refuse as a batch (one --yes
+// hint, both worktrees intact); with --yes the teardown runs with zero
+// prompts and the picked-set summary lands on stderr before the first
+// teardown message.
+func TestWtDeleteBatchConfirm(t *testing.T) {
+	repo := newGitRepo(t)
+	e := newEnv(t)
+	makeDirty := func(name string) string {
+		p := filepath.Join(repo, ".worktrees", name)
+		mustGit(t, repo, "worktree", "add", "-b", name+"-branch", p, "HEAD")
+		if err := os.WriteFile(filepath.Join(p, "uncommitted.txt"), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		res := e.run(t, p, "worktree", "register", "--branch", name+"-branch")
+		if res.err != nil {
+			t.Fatalf("register %s: %v\nstderr:\n%s", name, res.err, res.stderr)
+		}
+		return p
+	}
+	alpha := makeDirty("alpha")
+	beta := makeDirty("beta")
+
+	// Without --yes: the batch confirm refuses (non-TTY) after naming
+	// BOTH targets with their reasons — and nothing is destroyed.
+	res := e.run(t, repo, "worktree", "delete", alpha, beta)
+	if res.err != nil {
+		t.Fatalf("refused batch delete must exit 0: %v\nstderr:\n%s", res.err, res.stderr)
+	}
+	combined := res.stdout + res.stderr
+	for _, want := range []string{"unregenerable state", "alpha", "beta", "uncommitted changes"} {
+		if !strings.Contains(combined, want) {
+			t.Errorf("batch confirm output missing %q:\nstdout:\n%s\nstderr:\n%s", want, res.stdout, res.stderr)
+		}
+	}
+	if strings.Count(combined, "--yes") != 1 {
+		t.Errorf("batch refusal should hint --yes exactly once (one batch question, not one per target):\nstdout:\n%s\nstderr:\n%s", res.stdout, res.stderr)
+	}
+	list := e.run(t, repo, "worktree", "list", "--json")
+	if !strings.Contains(list.stdout, `"alpha-branch"`) || !strings.Contains(list.stdout, `"beta-branch"`) {
+		t.Errorf("declined batch must leave both worktrees registered:\n%s", list.stdout)
+	}
+
+	// With --yes: zero prompts, both torn down; the picked-set summary
+	// (picker path only) is absent for named args, but the batch block
+	// must not appear either.
+	res = e.run(t, repo, "worktree", "delete", "--yes", alpha, beta)
+	if res.err != nil {
+		t.Fatalf("batch delete --yes: %v\nstderr:\n%s", res.err, res.stderr)
+	}
+	// Teardown dispatches to the daemon and returns immediately —
+	// poll until both rows leave the registry.
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		list = e.run(t, repo, "worktree", "list", "--json")
+		if !strings.Contains(list.stdout, `"alpha-branch"`) && !strings.Contains(list.stdout, `"beta-branch"`) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("batch --yes must delete both worktrees; still registered:\n%s", list.stdout)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+}
+
 // ── treeman wt alias ──────────────────────────────────────────
 
 func TestWtAlias(t *testing.T) {
