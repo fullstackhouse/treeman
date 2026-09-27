@@ -20,7 +20,7 @@ import (
 	"github.com/stubbedev/treeman/internal/gitenv"
 	"github.com/stubbedev/treeman/internal/prepare"
 	"github.com/stubbedev/treeman/internal/resolve"
-	"github.com/stubbedev/treeman/internal/rpc"
+	"github.com/stubbedev/treeman/pkg/rpc"
 	"github.com/stubbedev/treeman/internal/store"
 	"github.com/stubbedev/treeman/internal/tui"
 	"github.com/stubbedev/treeman/internal/ui"

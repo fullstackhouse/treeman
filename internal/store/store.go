@@ -21,7 +21,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/stubbedev/treeman/internal/runid"
-	"github.com/stubbedev/treeman/internal/safego"
+	"github.com/stubbedev/treeman/pkg/safego"
 )
 
 //go:embed migrations/*.sql

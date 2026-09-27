@@ -3,7 +3,7 @@ package wt
 import (
 	"context"
 
-	"github.com/stubbedev/treeman/internal/rpc"
+	"github.com/stubbedev/treeman/pkg/rpc"
 )
 
 // DispatchFinalize hands setup + prepare to the daemon. Returns true

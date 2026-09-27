@@ -21,7 +21,7 @@ import (
 	"github.com/stubbedev/treeman/internal/ports"
 	"github.com/stubbedev/treeman/internal/prepare"
 	"github.com/stubbedev/treeman/internal/resolve"
-	"github.com/stubbedev/treeman/internal/rpc"
+	"github.com/stubbedev/treeman/pkg/rpc"
 	"github.com/stubbedev/treeman/internal/schema"
 	"github.com/stubbedev/treeman/internal/slug"
 	"github.com/stubbedev/treeman/internal/snapshot"

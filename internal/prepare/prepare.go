@@ -44,7 +44,7 @@ import (
 	"github.com/stubbedev/treeman/internal/migrations/runner"
 	"github.com/stubbedev/treeman/internal/migrations/testfw"
 	"github.com/stubbedev/treeman/internal/runid"
-	"github.com/stubbedev/treeman/internal/safego"
+	"github.com/stubbedev/treeman/pkg/safego"
 	"github.com/stubbedev/treeman/internal/slug"
 	"github.com/stubbedev/treeman/internal/snapshot"
 	"github.com/stubbedev/treeman/internal/store"

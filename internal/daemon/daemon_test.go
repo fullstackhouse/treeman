@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/stubbedev/treeman/internal/rpc"
+	"github.com/stubbedev/treeman/pkg/rpc"
 	"github.com/stubbedev/treeman/internal/store"
 )
 

@@ -15,7 +15,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/stubbedev/treeman/internal/safego"
+	"github.com/stubbedev/treeman/pkg/safego"
 )
 
 // ErrDaemonUnreachable wraps a dial failure — the daemon socket could

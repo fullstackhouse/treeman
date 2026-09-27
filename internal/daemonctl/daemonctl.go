@@ -12,7 +12,7 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/stubbedev/treeman/internal/rpc"
+	"github.com/stubbedev/treeman/pkg/rpc"
 )
 
 // LaunchdLabel is the LaunchAgent identifier the macOS installer

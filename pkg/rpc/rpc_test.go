@@ -178,3 +178,65 @@ func TestCallFlagsProtocolMismatch(t *testing.T) {
 		t.Errorf("unstamped response should pass: %v", err)
 	}
 }
+
+// TestEnvelopeV2Keys pins the wire-compatibility contract promised in
+// docs/rpc-reference.md: within protocol v2 the envelope keys — the
+// request discriminator + arg-object key, the response `kind` + payload
+// keys — never change shape, and the protocol version stays 2. Renaming
+// or removing any of these breaks third-party pkg/rpc consumers and
+// must fail this test (and bump the protocol version, not silently
+// drift).
+func TestEnvelopeV2Keys(t *testing.T) {
+	if ProtocolVersion != 2 {
+		t.Fatalf("ProtocolVersion = %d, want 2 — an envelope break was shipped under the same version", ProtocolVersion)
+	}
+
+	// Request: `method` discriminator plus an args object keyed by the
+	// method name (ping takes no args, so its envelope is the
+	// discriminator alone).
+	reqJSON, err := json.Marshal(Request{Method: MethodPing})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var req map[string]any
+	if err := json.Unmarshal(reqJSON, &req); err != nil {
+		t.Fatal(err)
+	}
+	if req["method"] != MethodPing {
+		t.Errorf("request discriminator key %q = %v, want %q", "method", req["method"], MethodPing)
+	}
+	if len(req) != 1 {
+		t.Errorf("ping request should carry only the discriminator, got keys %v", req)
+	}
+
+	// Response: `kind` discriminator plus payload fields; an unstamped
+	// pong round-trips `kind` and nothing else.
+	respJSON, err := json.Marshal(Response{Kind: KindPong})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(respJSON, &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp["kind"] != KindPong {
+		t.Errorf("response discriminator key %q = %v, want %q", "kind", resp["kind"], KindPong)
+	}
+	if len(resp) != 1 {
+		t.Errorf("bare pong should carry only kind, got keys %v", resp)
+	}
+
+	// The stable surface decodes from a minimal external-consumer
+	// envelope: an older client speaking pure v2 JSON (no new fields)
+	// still decodes cleanly.
+	var back Request
+	if err := json.Unmarshal(
+		[]byte(`{"method":"run_plan","run_plan":{"groups":[[{"type":"prepare","repo_path":"/r","worktree_path":"/r"}]]}}`),
+		&back,
+	); err != nil {
+		t.Fatalf("v2 run_plan envelope decode: %v", err)
+	}
+	if back.Method != MethodRunPlan || len(back.RunPlan.Groups) != 1 || len(back.RunPlan.Groups[0]) != 1 {
+		t.Errorf("v2 envelope decode drifted: %+v", back)
+	}
+}

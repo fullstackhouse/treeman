@@ -6,7 +6,7 @@ import (
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/stubbedev/treeman/internal/rpc"
+	"github.com/stubbedev/treeman/pkg/rpc"
 )
 
 // registerSyncTools binds sync_now (write) + sync_status (read) onto

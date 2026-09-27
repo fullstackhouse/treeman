@@ -87,7 +87,7 @@ and the daemon executes them, returning `plan_queued` (async) or
 `plan_result` (with `wait`).
 
 The full method / response-kind / task / param surface is generated
-from the constants in `internal/rpc/rpc.go`:
+from the constants in `pkg/rpc/rpc.go`:
 **[rpc-reference.md](rpc-reference.md)**.
 
 The calling shell's environment rides along on the relevant tasks (via
@@ -95,7 +95,7 @@ their params) so hook subprocesses see the user's `$PATH`,
 nvm/asdf/rbenv shims, etc.
 
 Every daemon goroutine — accept loop, per-connection handler, watcher
-loops, plan lanes, background reapers — runs through `internal/safego`,
+loops, plan lanes, background reapers — runs through `pkg/safego`,
 which recovers panics so one bad async task can't take down the daemon.
 
 ## Development

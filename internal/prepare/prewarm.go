@@ -14,7 +14,7 @@ import (
 	"github.com/stubbedev/treeman/internal/config"
 	"github.com/stubbedev/treeman/internal/db/engineconn"
 	"github.com/stubbedev/treeman/internal/engine"
-	"github.com/stubbedev/treeman/internal/safego"
+	"github.com/stubbedev/treeman/pkg/safego"
 	"github.com/stubbedev/treeman/internal/snapshot"
 	"github.com/stubbedev/treeman/internal/store"
 )

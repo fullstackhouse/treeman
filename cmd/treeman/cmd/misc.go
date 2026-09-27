@@ -25,7 +25,7 @@ import (
 	"github.com/stubbedev/treeman/internal/migrations/testfw"
 	"github.com/stubbedev/treeman/internal/prepare"
 	"github.com/stubbedev/treeman/internal/resolve"
-	"github.com/stubbedev/treeman/internal/rpc"
+	"github.com/stubbedev/treeman/pkg/rpc"
 	"github.com/stubbedev/treeman/internal/runid"
 	"github.com/stubbedev/treeman/internal/schema"
 	"github.com/stubbedev/treeman/internal/slug"

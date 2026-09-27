@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/stubbedev/treeman/internal/daemonctl"
-	"github.com/stubbedev/treeman/internal/rpc"
+	"github.com/stubbedev/treeman/pkg/rpc"
 )
 
 // EnsureDaemon tries to reach the daemon. If the probe fails it

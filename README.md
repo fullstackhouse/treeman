@@ -362,7 +362,7 @@ tm list              # passthrough to `treeman worktree list`
 | [docs/mcp-tools.md](docs/mcp-tools.md) | Generated MCP tool + prompt reference (from the registry) |
 | [docs/events.md](docs/events.md) | Generated event-type reference (from the `store.Evt*` constants) |
 | [docs/frameworks.md](docs/frameworks.md) | Generated migration-framework preset table (from the detector registry) |
-| [docs/rpc-reference.md](docs/rpc-reference.md) | Generated RPC method / task / kind reference (from `internal/rpc`) |
+| [docs/rpc-reference.md](docs/rpc-reference.md) | Generated RPC method / task / kind reference (from `pkg/rpc`) |
 | [docs/internals.md](docs/internals.md) | Storage layout, daemon model, init parity, RPC envelope, development |
 
 ---

@@ -23,7 +23,7 @@ type section struct {
 }
 
 func main() {
-	src := "internal/rpc/rpc.go"
+	src := "pkg/rpc/rpc.go"
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, src, nil, parser.ParseComments)
 	if err != nil {
@@ -75,8 +75,18 @@ func main() {
 	b.WriteString("# RPC reference\n\n")
 	b.WriteString("[← back to docs](README.md)\n\n")
 	b.WriteString("Auto-generated from the `Method*` / `Kind*` / `Task*` / `Param*`\n")
-	b.WriteString("constants in `internal/rpc/rpc.go`. Run `just sync-docs` after touching\n")
+	b.WriteString("constants in `pkg/rpc/rpc.go`. Run `just sync-docs` after touching\n")
 	b.WriteString("the RPC surface to refresh.\n\n")
+	b.WriteString("## Wire compatibility\n\n")
+	b.WriteString("The wire format is a PUBLIC interface: the newline-JSON envelope\n")
+	b.WriteString("(`method` + args on requests, `kind` + payload on responses), the\n")
+	b.WriteString("constants documented below, and the typed Go client in `pkg/rpc`\n")
+	b.WriteString("(importable by external modules) may be relied on by third-party\n")
+	b.WriteString("tools. Within protocol v2 changes are ADDITIVE only — new methods,\n")
+	b.WriteString("new response kinds, new optional fields; an existing constant's\n")
+	b.WriteString("value or an existing field's shape never changes or disappears\n")
+	b.WriteString("without a protocol v3 bump. A compat test (`TestEnvelopeV2Keys` in\n")
+	b.WriteString("pkg/rpc) pins the envelope keys so this is enforced, not promised.\n\n")
 	for _, s := range secs {
 		if len(s.rows) == 0 {
 			continue

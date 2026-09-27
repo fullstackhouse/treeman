@@ -18,8 +18,8 @@ import (
 
 	"github.com/stubbedev/treeman/internal/config"
 	"github.com/stubbedev/treeman/internal/daemon"
-	"github.com/stubbedev/treeman/internal/rpc"
-	"github.com/stubbedev/treeman/internal/safego"
+	"github.com/stubbedev/treeman/pkg/rpc"
+	"github.com/stubbedev/treeman/pkg/safego"
 	"github.com/stubbedev/treeman/internal/store"
 	"github.com/stubbedev/treeman/internal/version"
 )

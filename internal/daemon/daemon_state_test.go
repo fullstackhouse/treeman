@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stubbedev/treeman/internal/rpc"
+	"github.com/stubbedev/treeman/pkg/rpc"
 )
 
 // TestDispatchDaemonState_EmptyShape — with no watchers / in-flight

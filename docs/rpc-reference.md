@@ -3,8 +3,20 @@
 [← back to docs](README.md)
 
 Auto-generated from the `Method*` / `Kind*` / `Task*` / `Param*`
-constants in `internal/rpc/rpc.go`. Run `just sync-docs` after touching
+constants in `pkg/rpc/rpc.go`. Run `just sync-docs` after touching
 the RPC surface to refresh.
+
+## Wire compatibility
+
+The wire format is a PUBLIC interface: the newline-JSON envelope
+(`method` + args on requests, `kind` + payload on responses), the
+constants documented below, and the typed Go client in `pkg/rpc`
+(importable by external modules) may be relied on by third-party
+tools. Within protocol v2 changes are ADDITIVE only — new methods,
+new response kinds, new optional fields; an existing constant's
+value or an existing field's shape never changes or disappears
+without a protocol v3 bump. A compat test (`TestEnvelopeV2Keys` in
+pkg/rpc) pins the envelope keys so this is enforced, not promised.
 
 ## Methods
 

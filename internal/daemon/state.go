@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/stubbedev/treeman/internal/config"
-	"github.com/stubbedev/treeman/internal/safego"
+	"github.com/stubbedev/treeman/pkg/safego"
 	"github.com/stubbedev/treeman/internal/store"
 )
 
