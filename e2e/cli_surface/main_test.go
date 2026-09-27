@@ -149,6 +149,27 @@ func (e *env) run(t *testing.T, cwd string, args ...string) cliResult {
 	return cliResult{stdout: sout.String(), stderr: serr.String(), err: err}
 }
 
+// runColor is run with the block's NO_COLOR stripped, so tests can
+// exercise --color=always against a non-TTY stdout.
+func (e *env) runColor(t *testing.T, cwd string, args ...string) cliResult {
+	t.Helper()
+	cmd := exec.Command(sharedBin(t), args...)
+	cmd.Dir = cwd
+	var env []string
+	for _, kv := range append(os.Environ(), e.block()...) {
+		if strings.HasPrefix(kv, "NO_COLOR=") {
+			continue
+		}
+		env = append(env, kv)
+	}
+	cmd.Env = env
+	var sout, serr strings.Builder
+	cmd.Stdout = &sout
+	cmd.Stderr = &serr
+	err := cmd.Run()
+	return cliResult{stdout: sout.String(), stderr: serr.String(), err: err}
+}
+
 func mustGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", args...)

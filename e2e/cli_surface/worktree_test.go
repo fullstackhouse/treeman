@@ -347,6 +347,40 @@ func TestWtWait(t *testing.T) {
 	}
 }
 
+// TestColorFlag pins the --color global override: never strips ANSI
+// even on a TTY-shaped run, auto stays quiet on pipes, always forces
+// ANSI (once NO_COLOR is out of the way), and NO_COLOR beats always.
+func TestColorFlag(t *testing.T) {
+	repo := newGitRepo(t)
+	e := newEnv(t)
+
+	res := e.run(t, repo, "--color=never", "wt", "list")
+	if strings.Contains(res.stdout+res.stderr, "\x1b[") {
+		t.Errorf("--color=never emitted ANSI codes:\n%q", res.stdout)
+	}
+
+	res = e.run(t, repo, "wt", "list")
+	if strings.Contains(res.stdout+res.stderr, "\x1b[") {
+		t.Errorf("auto on a pipe emitted ANSI codes:\n%q", res.stdout)
+	}
+
+	res = e.runColor(t, repo, "--color=always", "wt", "list")
+	if !strings.Contains(res.stdout+res.stderr, "\x1b[") {
+		t.Errorf("--color=always emitted no ANSI codes:\n%q", res.stdout)
+	}
+
+	// NO_COLOR beats --color=always (ecosystem convention).
+	res = e.run(t, repo, "--color=always", "wt", "list")
+	if strings.Contains(res.stdout+res.stderr, "\x1b[") {
+		t.Errorf("NO_COLOR=1 must suppress --color=always:\n%q", res.stdout)
+	}
+
+	res = e.run(t, repo, "--color=bogus", "wt", "list")
+	if res.err == nil {
+		t.Error("invalid --color value must error")
+	}
+}
+
 // ── treeman wt delete dispatches to daemon ───────────────────────
 
 func TestWtDeleteDispatch(t *testing.T) {

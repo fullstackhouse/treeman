@@ -34,6 +34,11 @@ const (
 var (
 	colorOnce   sync.Once
 	colorEnable bool
+	// colorMode carries the --color flag override: "" (unset),
+	// "auto" (env/TTY detection), "always" or "never". The flag is a
+	// per-invocation override, so it must survive the once-guarded
+	// detection and re-win on every later EnableColorForStderr call.
+	colorMode string
 
 	// symbol set — switched to ASCII when the locale looks non-UTF8.
 	SymSuccess = "✓"
@@ -80,14 +85,38 @@ func detectColor() {
 	}
 }
 
+// SetColorMode applies the --color flag: "auto" (default) leaves
+// env/TTY detection in charge, "always" forces color on (NO_COLOR
+// still wins — ecosystem convention), "never" forces it off for this
+// invocation, including the stderr re-enable pickers use.
+func SetColorMode(mode string) error {
+	switch mode {
+	case "", "auto":
+		colorMode = "auto"
+		return nil
+	case "always", "never":
+		colorMode = mode
+		colorOnce.Do(detectColor)
+		switch {
+		case mode == "never":
+			colorEnable = false
+		case os.Getenv("NO_COLOR") == "":
+			colorEnable = true
+		}
+		return nil
+	default:
+		return fmt.Errorf("invalid --color %q (want auto|always|never)", mode)
+	}
+}
+
 // EnableColorForStderr turns styling on when stderr is a terminal, for
 // interactive TUIs that render to stderr while stdout is captured by a
 // shell substitution (`cd "$(treeman worktree switch)"`). The default
 // detection keys off stdout, which is a pipe in exactly that case.
-// NO_COLOR and TERM=dumb still win.
+// NO_COLOR, TERM=dumb and --color=never still win.
 func EnableColorForStderr() {
 	colorOnce.Do(detectColor)
-	if os.Getenv("NO_COLOR") != "" || os.Getenv("TERM") == "dumb" {
+	if colorMode == "never" || os.Getenv("NO_COLOR") != "" || os.Getenv("TERM") == "dumb" {
 		return
 	}
 	if isatty.IsTerminal(os.Stderr.Fd()) || isatty.IsCygwinTerminal(os.Stderr.Fd()) {

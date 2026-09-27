@@ -11,6 +11,7 @@ import (
 
 	"github.com/stubbedev/treeman/cmd/treeman/cmd"
 	"github.com/stubbedev/treeman/internal/config"
+	"github.com/stubbedev/treeman/internal/ui"
 	"github.com/stubbedev/treeman/internal/version"
 )
 
@@ -30,8 +31,12 @@ func New() *cli.Command {
 		Suggest: true,
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "config", Usage: "user-global config file (overrides TREEMAN_CONFIG)"},
+			&cli.StringFlag{Name: "color", Value: "auto", Usage: "when to colorize output: auto | always | never (NO_COLOR beats always)"},
 		},
 		Before: func(ctx context.Context, c *cli.Command) (context.Context, error) {
+			if err := ui.SetColorMode(c.String("color")); err != nil {
+				return ctx, err
+			}
 			var err error
 			restoreConfig, err = config.ConfigureGlobalPath(c.String("config"))
 			return ctx, err
