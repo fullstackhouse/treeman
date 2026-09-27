@@ -14,13 +14,14 @@ import (
 
 	"github.com/stubbedev/treeman/cmd/treeman/cmd"
 	"github.com/stubbedev/treeman/internal/treemanapp"
+	"github.com/stubbedev/treeman/internal/ui"
 )
 
 func main() {
 	app := treemanapp.New()
 	wireCommandNotFound(app)
 	if err := app.Run(context.Background(), os.Args); err != nil {
-		fmt.Fprintln(os.Stderr, "treeman:", err)
+		ui.RenderError(err)
 		os.Exit(1)
 	}
 }

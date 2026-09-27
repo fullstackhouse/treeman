@@ -942,7 +942,7 @@ func wtRegister() *cli.Command {
 				Slug       string `json:"slug"`
 			}
 			_ = json.Unmarshal(payload, &r)
-			fmt.Printf("worktree #%d slug=%s repo=#%d (%s)\n", r.WorktreeID, r.Slug, r.RepoID, repoRoot)
+			PrintInfo("worktree #%d slug=%s repo=#%d (%s)", r.WorktreeID, r.Slug, r.RepoID, repoRoot)
 			return nil
 		},
 	}
@@ -1552,7 +1552,7 @@ func wtBack() *cli.Command {
 			// Untracked files count: removing the worktree destroys them too.
 			dirty, err := gitenv.HasWorkingTreeChanges(ctx, wtRoot)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "git status failed: %v; --remove aborted\n", err)
+				ui.Warn("git status failed: %v; --remove aborted", err)
 				fmt.Println(repoRoot)
 				return nil
 			}
@@ -1579,7 +1579,7 @@ func wtBack() *cli.Command {
 			// whole point — the shell cd's to the path we just printed.
 			// Mirrors the old zsh gwtd, which cd'd to the root first.
 			if chdirErr := os.Chdir(repoRoot); chdirErr != nil {
-				fmt.Fprintf(os.Stderr, "chdir %s failed: %v; skipping --remove\n", repoRoot, chdirErr)
+				ui.Warn("chdir %s failed: %v; skipping --remove", repoRoot, chdirErr)
 				return nil
 			}
 
@@ -1600,7 +1600,9 @@ func wtBack() *cli.Command {
 			err = wtDelete().Run(ctx, argv)
 			ui.Out = prevOut
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "wt delete failed: %v\n", err)
+				// wt delete already rendered its own error lines; this is
+				// the back-level echo that the remove step failed.
+				ui.Error("wt delete failed: %v", err)
 			}
 			return nil
 		},
