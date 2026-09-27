@@ -762,11 +762,24 @@ func jsonStream(v any) error {
 
 // followLoop polls SQLite for events newer than lastID at a 250ms
 // cadence. SQLite WAL means a separate writer (the daemon) doesn't
-// block our reads.
+// block our reads. On a TTY in human mode it opens with a dim
+// "following" banner on stderr (#101) — stdout stays pipe-clean — and
+// when a batch arrives after an idle gap (previous event >2 minutes
+// earlier), a dim timestamp separator narrates the scrollback.
 func followLoop(ctx context.Context, st *store.Store, baseFilter store.EventFilter, lastID int64, style eventStyle) error {
 	baseFilter.OldestFirst = true
 	baseFilter.Limit = 0
 	baseFilter.AfterID = lastID
+	if !style.asJSON {
+		_, _ = fmt.Fprintln(ui.Err, ui.Dim("following — ctrl+c to stop"))
+	}
+	// lastMs is the ts of the last printed event (0 until the first
+	// batch); startedAt lets the FIRST batch also get a separator when
+	// the backlog it resumes from is stale — the "is this new or the
+	// startup backlog?" ambiguity #101 is about.
+	var lastMs int64
+	startedAt := time.Now().UnixMilli()
+	gap := 2 * time.Minute.Milliseconds()
 	t := time.NewTicker(250 * time.Millisecond)
 	defer t.Stop()
 	for {
@@ -779,6 +792,10 @@ func followLoop(ctx context.Context, st *store.Store, baseFilter store.EventFilt
 				return err
 			}
 			for _, e := range rows {
+				if !style.asJSON && (e.Ts-lastMs > gap || (lastMs == 0 && startedAt-e.Ts > gap)) {
+					_, _ = fmt.Fprintf(ui.Err, "%s\n", ui.Dim("──── "+time.UnixMilli(e.Ts).Format("15:04:05")+" ────"))
+				}
+				lastMs = e.Ts
 				printEventStyled(style, e)
 				if e.ID > baseFilter.AfterID {
 					baseFilter.AfterID = e.ID

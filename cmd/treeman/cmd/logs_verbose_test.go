@@ -13,6 +13,19 @@ import (
 	"github.com/stubbedev/treeman/internal/ui"
 )
 
+// captureOutErr redirects ui.Out AND ui.Err for the duration of f and
+// returns what was written to each.
+func captureOutErr(t *testing.T, f func()) (string, string) {
+	t.Helper()
+	var out, errb bytes.Buffer
+	oldOut, oldErr := ui.Out, ui.Err
+	ui.Out = &out
+	ui.Err = &errb //nolint:reassign // test seam: the package-level writers are the redirect point
+	defer func() { ui.Out, ui.Err = oldOut, oldErr }()
+	f()
+	return out.String(), errb.String()
+}
+
 // captureOut redirects ui.Out for the duration of f and returns what
 // was written.
 func captureOut(t *testing.T, f func()) string {
