@@ -778,10 +778,15 @@ func prepareMySQL(
 	// the cold build and just clone the template into paratest DBs.
 	// Inputs feed the fingerprint, so any user-meaningful change
 	// invalidates the cache naturally — no force-rebuild knob.
+	// With a spare pool configured (#53), restores first claim a
+	// pre-warmed spare via a physical clone of the spare — no logical
+	// dump load — before falling back to the staged restore.
+	restore := restoreFor(d.Engine, engineconn.NewMySQLConn(drv), drv.SnapshotRestoreStaged,
+		st, repoID, worktreeID, d)
 	out, done, flight, err := cacheHitGeneric(
 		ctx,
 		drv.DatabaseExists,
-		drv.SnapshotRestoreStaged,
+		restore,
 		d,
 		tplCtx,
 		worktreePath,
@@ -797,6 +802,12 @@ func prepareMySQL(
 	if done || err != nil {
 		return out, err
 	}
+
+	// Top the spare pool back up after ANY successful exit that leaves
+	// this template in place — same contract as the postgres path.
+	defer func() {
+		maybeSpawnPrewarm(cfg, st, repoID, worktreeID, d, key.Fingerprint(), templateName, out, err)
+	}()
 
 	// Per-input vectors used for ancestor lookup AND persisted into
 	// the new snapshot row so future preps can build incrementally
@@ -2092,7 +2103,8 @@ func preparePostgres(
 	// pool configured, restores (source + fanout clones alike) first try
 	// to claim a pre-warmed spare via rename before paying a full
 	// `CREATE DATABASE … TEMPLATE`.
-	restore := postgresRestoreFor(drv, st, repoID, worktreeID, d)
+	restore := restoreFor(d.Engine, engineconn.NewPostgresConn(drv), drv.SnapshotRestore,
+		st, repoID, worktreeID, d)
 	out, done, flight, err := cacheHitGeneric(
 		ctx,
 		drv.DatabaseExists,

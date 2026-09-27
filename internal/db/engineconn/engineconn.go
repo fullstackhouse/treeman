@@ -54,6 +54,48 @@ type Conn interface {
 	SizeKB(ctx context.Context, name string) int64
 }
 
+// SnapshotCreator is the optional capability of creating `target` as a
+// copy of `template` through the engine's cheapest native path
+// (Postgres CREATE DATABASE … TEMPLATE, MySQL direct physical clone).
+// Backs spare-pool replenishment (#53). Drivers without it simply
+// don't implement the interface; call sites type-assert.
+type SnapshotCreator interface {
+	CreateSnapshot(ctx context.Context, template, target string) error
+}
+
+// SpareClaimer is the optional capability of landing a pre-warmed
+// spare onto `target` cheaply — Postgres by renaming the spare (a
+// catalog-only, millisecond operation), MySQL by a staged physical
+// clone of the spare (file-copy import, no logical dump load). The
+// caller has already cleared `target` (#53).
+type SpareClaimer interface {
+	ClaimSpare(ctx context.Context, spare, target string) error
+}
+
+// NewPostgresConn wraps an already-connected driver in the Conn view —
+// for sites that hold the concrete driver and want the capability
+// interfaces without re-dialing.
+func NewPostgresConn(d *dbpostgres.Driver) Conn { return postgresConn{d} }
+
+// NewMySQLConn is NewPostgresConn for MySQL.
+func NewMySQLConn(d *dbmysql.Driver) Conn { return mysqlConn{d} }
+
+func (c postgresConn) CreateSnapshot(ctx context.Context, template, target string) error {
+	return c.d.SnapshotRestore(ctx, template, target)
+}
+
+func (c postgresConn) ClaimSpare(ctx context.Context, spare, target string) error {
+	return c.d.RenameDatabase(ctx, spare, target)
+}
+
+func (c mysqlConn) CreateSnapshot(ctx context.Context, template, target string) error {
+	return c.d.SnapshotRestore(ctx, template, target)
+}
+
+func (c mysqlConn) ClaimSpare(ctx context.Context, spare, target string) error {
+	return c.d.SnapshotRestore(ctx, spare, target)
+}
+
 type mysqlConn struct{ d *dbmysql.Driver }
 
 func (c mysqlConn) Close() error                                      { return c.d.Close() }

@@ -234,15 +234,25 @@ func TestValidate(t *testing.T) {
 			want: "",
 		},
 		{
-			name: "prewarm rejects non-postgres engines",
+			name: "prewarm accepts capability-bearing engines",
+			cfg: Config{
+				Databases: []DatabaseConfig{
+					{Engine: "mysql", NameTemplate: "app_{slug}", Prewarm: 2},
+					{Engine: "postgres", NameTemplate: "app_{slug}", Prewarm: 2},
+				},
+			},
+			want: "",
+		},
+		{
+			name: "prewarm rejects engines without the spare capability",
 			cfg: Config{
 				Databases: []DatabaseConfig{{
-					Engine:       "mysql",
+					Engine:       "redis",
 					NameTemplate: "app_{slug}",
 					Prewarm:      2,
 				}},
 			},
-			want: "prewarm is postgres-only",
+			want: "prewarm is not supported",
 		},
 		{
 			name: "prewarm rejects branch_scoped",

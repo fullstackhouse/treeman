@@ -399,19 +399,31 @@ func (d DatabaseConfig) validate(path string) error {
 	return errors.Join(errs...)
 }
 
-// validatePrewarm guards `databases[].prewarm`. It rides on
-// `ALTER DATABASE … RENAME` — only Postgres offers a constant-time
-// whole-database rename (MySQL's cross-DB RENAME TABLE breaks on
-// triggers; Mongo/Redis/ES have no rename at all). Reject rather than
-// silently ignore so the knob never reads as dead config.
+// PrewarmCapableEngines lists the engine families whose driver
+// implements the spare capabilities (engineconn.SnapshotCreator +
+// SpareClaimer): Postgres claims spares via a constant-time catalog
+// rename, MySQL via a staged physical clone. It lives here because
+// engineconn imports config — a cycle would result the other way —
+// and engineconn's tests cross-check that every listed family's conn
+// really implements both interfaces, so the set can't drift.
+var PrewarmCapableEngines = map[string]bool{
+	"mysql":    true,
+	"postgres": true,
+}
+
+// validatePrewarm guards `databases[].prewarm`. Accepts any family
+// whose driver implements the spare capabilities (#53) and rejects
+// the rest rather than silently ignoring, so the knob never reads as
+// dead config.
 func (d DatabaseConfig) validatePrewarm(path string) []error {
 	if d.Prewarm == 0 {
 		return nil
 	}
 	var errs []error
-	if fam, ok := engine.Canonical(d.Engine); !ok || fam != engine.FamilyPostgres {
+	fam, ok := engine.Canonical(d.Engine)
+	if !ok || !PrewarmCapableEngines[string(fam)] {
 		errs = append(errs, fmt.Errorf(
-			"%s: prewarm is postgres-only — engine %q has no constant-time database rename to claim a spare with",
+			"%s: prewarm is not supported for engine %q (capable: mysql, postgres) — it has no cheap spare-claim path",
 			path, d.Engine))
 	}
 	if d.BranchScoped {

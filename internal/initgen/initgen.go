@@ -111,8 +111,9 @@ func AppendEngines(path string, engines []string) error {
 // engineEntry builds one databases: entry for `engine`. The shape
 // follows the template path in RenderTemplate: name-scoped engines
 // (mysql/postgres/mongo) get a name_template + test_clones;
-// prefix-scoped engines (redis/es/s3) get a key_prefix. Postgres also
-// scaffolds prewarm, the only family with rename-based spare claims.
+// prefix-scoped engines (redis/es/s3) get a key_prefix. The spare-
+// capable families (postgres: rename claims; mysql: physical-clone
+// claims) also scaffold prewarm, where the knob is valid.
 func engineEntry(name, engine string, fam enginepkg.Family) *yaml.Node {
 	db := mapNode("engine", scalar(engine))
 	switch fam {
@@ -124,9 +125,9 @@ func engineEntry(name, engine string, fam enginepkg.Family) *yaml.Node {
 			"clones", scalar("auto"),
 			"name_template", scalar(name+"_testing_{slug}_test_{n}"),
 		))
-		if fam == enginepkg.FamilyPostgres {
+		if fam == enginepkg.FamilyPostgres || fam == enginepkg.FamilyMySQL {
 			mapSet(db, "prewarm", scalar("2"))
-			mapKeyNode(db, "prewarm").LineComment = "spare clones pre-restored from the template; cache-hit creates claim one via rename (ms)"
+			mapKeyNode(db, "prewarm").LineComment = "spare clones pre-restored from the template; cache-hit creates claim one cheaply (rename on postgres, physical clone on mysql)"
 		}
 	}
 	return db
@@ -187,12 +188,11 @@ func frameworkDbEntry(name string, spec framework.Spec) *yaml.Node {
 		"clones", scalar("auto"),
 		"name_template", scalar(name+"_testing_{slug}_test_{n}"),
 	))
-	// prewarm only applies to Postgres (the only engine with a
-	// constant-time whole-database rename to claim spares with) —
-	// scaffold it where it's valid so users discover the knob.
-	if fam, ok := enginepkg.Canonical(spec.EngineHint); ok && fam == enginepkg.FamilyPostgres {
+	// prewarm only applies to the spare-capable engines — scaffold it
+	// where it's valid so users discover the knob.
+	if fam, ok := enginepkg.Canonical(spec.EngineHint); ok && (fam == enginepkg.FamilyPostgres || fam == enginepkg.FamilyMySQL) {
 		mapSet(db, "prewarm", scalar("2"))
-		mapKeyNode(db, "prewarm").LineComment = "spare clones pre-restored from the template; cache-hit creates claim one via rename (ms)"
+		mapKeyNode(db, "prewarm").LineComment = "spare clones pre-restored from the template; cache-hit creates claim one cheaply (rename on postgres, physical clone on mysql)"
 	}
 	return db
 }
