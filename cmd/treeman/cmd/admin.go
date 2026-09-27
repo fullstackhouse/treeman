@@ -399,12 +399,13 @@ func configSet() *cli.Command {
 work) and falls back to a literal string otherwise.
 
 Examples:
-  treeman config set daemon.gc_interval 30
   treeman config set databases[0].engine mariadb
-  treeman config set worktrees.links '["./.env", "./.envrc"]'`,
+  treeman config set worktrees.links '["./.env", "./.envrc"]'
+  treeman config set --global snapshots.gc_interval_minutes 30`,
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "repo", Aliases: []string{"r"}},
 			&cli.BoolFlag{Name: "json"},
+			&cli.BoolFlag{Name: "global", Usage: "edit the user-global ~/.config/treeman/config.yaml instead of .treeman.yaml"},
 		},
 		Action: func(ctx context.Context, c *cli.Command) error {
 			if c.NArg() < 2 {
@@ -412,16 +413,15 @@ Examples:
 			}
 			path := c.Args().Get(0)
 			rawValue := c.Args().Get(1)
-			repoRoot, err := resolveRepo(c.String("repo"))
+			p, histRoot, layer, err := resolveConfigScope(c.String("repo"), c.Bool("global"))
 			if err != nil {
 				return err
 			}
-			p := filepath.Join(repoRoot, ".treeman.yaml")
-			body, prev, value, err := applyConfigSet(p, path, rawValue)
+			body, prev, value, err := applyConfigSet(p, layer, path, rawValue)
 			if err != nil {
 				return err
 			}
-			if err := writeConfig(ctx, repoRoot, p, body); err != nil {
+			if err := persistConfigBody(ctx, histRoot, p, body, layer == "global"); err != nil {
 				return err
 			}
 			prevJSON := decodePrevJSON(prev)
@@ -444,26 +444,32 @@ Examples:
 	}
 }
 
-// applyConfigSet reads .treeman.yaml at p, patches the dotted path with
-// rawValue (parsed as JSON when possible, literal string otherwise),
-// and validates the result still parses as config.Config. Returns the
-// new body, the previous node at that path (nil for a new key), and the
+// applyConfigSet reads the config file at p, patches the dotted path
+// with rawValue (parsed as JSON when possible, literal string
+// otherwise), scope-checks the top-level key against layer, and
+// validates the result still parses as config.Config. Returns the new
+// body, the previous node at that path (nil for a new key), and the
 // parsed value.
-func applyConfigSet(p, path, rawValue string) (body []byte, prev *yaml.Node, value any, err error) {
+func applyConfigSet(p, layer, path, rawValue string) (body []byte, prev *yaml.Node, value any, err error) {
 	raw, err := os.ReadFile(p)
-	if err != nil {
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, nil, nil, fmt.Errorf("read %s: %w", p, err)
 	}
 	var doc yaml.Node
 	if err := yaml.Unmarshal(raw, &doc); err != nil {
 		return nil, nil, nil, fmt.Errorf("parse %s: %w", p, err)
 	}
+	// Missing file (first global set, fresh repo) starts from an empty
+	// mapping — the write layer creates the file, same as the MCP tools.
+	if doc.Kind == 0 {
+		doc = yaml.Node{Kind: yaml.DocumentNode, Content: []*yaml.Node{{Kind: yaml.MappingNode}}}
+	}
 	segs, err := yamlpatch.ParsePath(path)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 	if len(segs) > 0 && segs[0].Key != "" {
-		if err := config.CheckKeyInLayer(segs[0].Key, "repo"); err != nil {
+		if err := config.CheckKeyInLayer(segs[0].Key, layer); err != nil {
 			return nil, nil, nil, err
 		}
 	}
@@ -504,6 +510,46 @@ func decodePrevJSON(prev *yaml.Node) string {
 		return ""
 	}
 	return string(b)
+}
+
+// resolveConfigScope picks the config file a scoped write/read targets
+// — the repo `.treeman.yaml` (default) or, with --global, the
+// user-global config — mirroring the MCP tools' resolveConfigTarget so
+// both surfaces agree on path rules and generation-history keying
+// (the global config is keyed by its own parent dir).
+func resolveConfigScope(repoFlag string, global bool) (path, histRoot, layer string, err error) {
+	if global {
+		gp, ok := config.GlobalConfigPath()
+		if !ok {
+			return "", "", "", errors.New("cannot resolve global config path (no home dir)")
+		}
+		return gp, filepath.Dir(gp), "global", nil
+	}
+	repoRoot, err := resolveRepo(repoFlag)
+	if err != nil {
+		return "", "", "", err
+	}
+	return filepath.Join(repoRoot, ".treeman.yaml"), repoRoot, "repo", nil
+}
+
+// persistConfigBody writes a patched config body. The repo layer goes
+// through the daemon (single writer + repo reload); the global layer
+// has no repo to reload, so it snapshots the previous content and
+// atomic-writes in-process — the same path the MCP scoped tools take.
+func persistConfigBody(ctx context.Context, histRoot, path string, body []byte, global bool) error {
+	if !global {
+		return writeConfig(ctx, histRoot, path, body)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create config dir: %w", err)
+	}
+	if prev, err := os.ReadFile(path); err == nil {
+		if st, serr := openDefaultStore(ctx); serr == nil {
+			_, _ = st.SnapshotConfig(ctx, histRoot, path, prev)
+			_ = st.Close()
+		}
+	}
+	return yamlpatch.AtomicWrite(path, body)
 }
 
 // openDefaultStore opens the default SQLite event store.

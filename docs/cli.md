@@ -695,15 +695,16 @@ patch a single field of .treeman.yaml by dotted path (preserves comments + key o
 work) and falls back to a literal string otherwise.
 
 Examples:
-  treeman config set daemon.gc_interval 30
   treeman config set databases[0].engine mariadb
   treeman config set worktrees.links '["./.env", "./.envrc"]'
+  treeman config set --global snapshots.gc_interval_minutes 30
 ```
 
 | Flag | Usage |
 |---|---|
 | `-r`, `--repo` |  |
 | `--json` |  |
+| `--global` | edit the user-global ~/.config/treeman/config.yaml instead of .treeman.yaml |
 
 ### `treeman config history`
 
@@ -713,6 +714,7 @@ list stored .treeman.yaml generations for this repo
 |---|---|
 | `-r`, `--repo` |  |
 | `--json` |  |
+| `--global` | list generations of the user-global config instead of .treeman.yaml |
 
 ### `treeman config restore`
 
@@ -722,6 +724,7 @@ write a stored generation back to .treeman.yaml
 |---|---|
 | `-r`, `--repo` |  |
 | `--json` |  |
+| `--global` | restore a generation of the user-global config instead of .treeman.yaml |
 
 ### `treeman schema`
 

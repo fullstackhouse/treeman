@@ -619,19 +619,19 @@ func configHistory() *cli.Command {
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "repo", Aliases: []string{"r"}},
 			&cli.BoolFlag{Name: "json"},
+			&cli.BoolFlag{Name: "global", Usage: "list generations of the user-global config instead of .treeman.yaml"},
 		},
 		Action: func(ctx context.Context, c *cli.Command) error {
-			repoRoot, err := resolveRepo(c.String("repo"))
+			p, histRoot, layer, err := resolveConfigScope(c.String("repo"), c.Bool("global"))
 			if err != nil {
 				return err
 			}
-			p := filepath.Join(repoRoot, ".treeman.yaml")
 			st, err := openDefaultStore(ctx)
 			if err != nil {
 				return err
 			}
 			defer func() { _ = st.Close() }()
-			gens, err := st.ListConfigGenerations(ctx, repoRoot, p)
+			gens, err := st.ListConfigGenerations(ctx, histRoot, p)
 			if err != nil {
 				return err
 			}
@@ -644,7 +644,7 @@ func configHistory() *cli.Command {
 						"bytes":      len(g.Content),
 					})
 				}
-				return jsonStream(map[string]any{"repo": repoRoot, "generations": rows})
+				return jsonStream(map[string]any{"repo": histRoot, "file": p, "scope": layer, "generations": rows})
 			}
 			if len(gens) == 0 {
 				ui.Info("no stored generations for %s", p)
@@ -673,6 +673,7 @@ func configRestore() *cli.Command {
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "repo", Aliases: []string{"r"}},
 			&cli.BoolFlag{Name: "json"},
+			&cli.BoolFlag{Name: "global", Usage: "restore a generation of the user-global config instead of .treeman.yaml"},
 		},
 		Action: func(ctx context.Context, c *cli.Command) error {
 			if c.NArg() < 1 {
@@ -682,29 +683,30 @@ func configRestore() *cli.Command {
 			if err != nil {
 				return fmt.Errorf("generation must be an integer: %w", err)
 			}
-			repoRoot, err := resolveRepo(c.String("repo"))
+			p, histRoot, layer, err := resolveConfigScope(c.String("repo"), c.Bool("global"))
 			if err != nil {
 				return err
 			}
-			p := filepath.Join(repoRoot, ".treeman.yaml")
 			st, err := openDefaultStore(ctx)
 			if err != nil {
 				return err
 			}
-			g, err := st.GetConfigGeneration(ctx, repoRoot, p, gen)
+			g, err := st.GetConfigGeneration(ctx, histRoot, p, gen)
 			_ = st.Close()
 			if err != nil {
 				return fmt.Errorf("generation %d not found for %s", gen, p)
 			}
-			if err := config.CheckBodyScope(g.Content, "repo"); err != nil {
+			if err := config.CheckBodyScope(g.Content, layer); err != nil {
 				return fmt.Errorf("generation %d cannot be restored: %w", gen, err)
 			}
-			if err := writeConfig(ctx, repoRoot, p, g.Content); err != nil {
+			if err := persistConfigBody(ctx, histRoot, p, g.Content, layer == "global"); err != nil {
 				return err
 			}
 			if c.Bool("json") {
 				return jsonStream(map[string]any{
-					"repo":     repoRoot,
+					"repo":     histRoot,
+					"file":     p,
+					"scope":    layer,
 					"restored": gen,
 					"bytes":    len(g.Content),
 				})

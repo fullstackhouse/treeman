@@ -246,6 +246,79 @@ func TestConfigRestore(t *testing.T) {
 	})
 }
 
+// TestConfigGlobalScope exercises the --global layer end-to-end: a
+// first set creates the user-global config, a repo-only key is
+// rejected, and the set → history → restore round trip works against
+// the global file with its own generation trail.
+func TestConfigGlobalScope(t *testing.T) {
+	repo := newGitRepo(t)
+	e := newEnv(t)
+	globalCfg := filepath.Join(e.configDir, "treeman", "config.yaml")
+
+	t.Run("first global set creates the file", func(t *testing.T) {
+		res := e.run(t, repo, "config", "set", "--global", "daemon.log_level", "debug")
+		if res.err != nil {
+			t.Fatalf("global set: %v\nstderr:\n%s", res.err, res.stderr)
+		}
+		body, err := os.ReadFile(globalCfg)
+		if err != nil {
+			t.Fatalf("global config not created: %v", err)
+		}
+		if !strings.Contains(string(body), "log_level: debug") {
+			t.Errorf("expected log_level: debug in global config:\n%s", body)
+		}
+	})
+
+	t.Run("repo-only key rejected in the global layer", func(t *testing.T) {
+		before, _ := os.ReadFile(globalCfg)
+		res := e.run(t, repo, "config", "set", "--global", "databases", "[]")
+		if res.err == nil {
+			t.Errorf("global set of repo-only key should be rejected")
+		}
+		after, _ := os.ReadFile(globalCfg)
+		if string(before) != string(after) {
+			t.Errorf("rejected set must not modify the global file")
+		}
+	})
+
+	t.Run("set → history → restore round trip", func(t *testing.T) {
+		if res := e.run(t, repo, "config", "set", "--global", "snapshots.gc_interval_minutes", "30"); res.err != nil {
+			t.Fatalf("global set #2: %v\nstderr:\n%s", res.err, res.stderr)
+		}
+		res := e.run(t, repo, "config", "history", "--global", "--json")
+		if res.err != nil {
+			t.Fatalf("global history: %v\nstderr:\n%s", res.err, res.stderr)
+		}
+		var hist struct {
+			Scope       string `json:"scope"`
+			Generations []struct {
+				Generation int `json:"generation"`
+			} `json:"generations"`
+		}
+		if err := json.Unmarshal([]byte(strings.TrimSpace(res.stdout)), &hist); err != nil {
+			t.Fatalf("decode global history JSON %q: %v", res.stdout, err)
+		}
+		if hist.Scope != "global" {
+			t.Errorf("history scope = %q, want global", hist.Scope)
+		}
+		// The first set had no previous content to snapshot, so exactly
+		// one generation (the daemon-only body) is on record.
+		if len(hist.Generations) != 1 || hist.Generations[0].Generation != 1 {
+			t.Fatalf("expected [1], got %v: %s", hist.Generations, res.stdout)
+		}
+		if res := e.run(t, repo, "config", "restore", "--global", "1"); res.err != nil {
+			t.Fatalf("global restore: %v\nstderr:\n%s", res.err, res.stderr)
+		}
+		body, _ := os.ReadFile(globalCfg)
+		if strings.Contains(string(body), "gc_interval_minutes") {
+			t.Errorf("restore should have dropped the snapshots block:\n%s", body)
+		}
+		if !strings.Contains(string(body), "log_level: debug") {
+			t.Errorf("restored global config lost the daemon block:\n%s", body)
+		}
+	})
+}
+
 // ── treeman schema ───────────────────────────────────────────────
 
 func TestSchemaDump(t *testing.T) {
