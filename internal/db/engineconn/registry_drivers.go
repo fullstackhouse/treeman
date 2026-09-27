@@ -18,6 +18,15 @@ import (
 )
 
 func init() {
+	Register(engine.FamilyFile, DriverFactory{
+		// The file family has no server: it is always "configured" —
+		// probe/drop/GC surfaces can act on rendered paths with no
+		// connections block at all.
+		Configured: func(*config.Config) bool { return true },
+		Connect: func(context.Context, *config.Config) (Conn, bool, error) {
+			return fileConn{}, true, nil
+		},
+	})
 	Register(engine.FamilyMySQL, DriverFactory{
 		Configured: func(cfg *config.Config) bool { return cfg.Connections.Mysql != nil },
 		Connect: func(ctx context.Context, cfg *config.Config) (Conn, bool, error) {

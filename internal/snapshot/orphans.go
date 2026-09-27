@@ -106,6 +106,13 @@ func listTemplates(ctx context.Context, conn engineconn.Conn, fam engine.Family)
 		prefix, re = "tm_", esTemplatePrefix
 	case engine.FamilyRedis:
 		prefix, re = "_tm:", redisTemplatePrefix
+	case engine.FamilyFile:
+		// File templates are siblings of their rendered source files in
+		// per-repo directories; there is no single namespace prefix to
+		// enumerate, so the orphan audit doesn't see them. Template
+		// cleanup for the file family goes through GC + PurgeRepo, which
+		// act on recorded snapshot rows.
+		return nil, nil
 	case engine.FamilyMySQL, engine.FamilyPostgres, engine.FamilyMongo, engine.FamilyS3:
 		// name-scoped default already set
 	}

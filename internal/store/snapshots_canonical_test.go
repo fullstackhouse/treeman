@@ -80,15 +80,15 @@ func TestRecordSnapshotPreservesUnknownEngine(t *testing.T) {
 		t.Fatal(err)
 	}
 	err = st.RecordSnapshot(ctx, SnapshotRecord{
-		Fingerprint: "fp_sqlite", Engine: "sqlite",
+		Fingerprint: "fp_unknown", Engine: "sqlight",
 		SourceDB: "src", TemplateName: "tpl",
 		LastUsedAt: 1, RepoID: repoID,
 	})
 	if err != nil {
 		t.Fatalf("record: %v", err)
 	}
-	rec, _ := st.LookupSnapshot(ctx, "fp_sqlite")
-	if rec.Engine != "sqlite" {
-		t.Errorf("unknown engine rewritten: stored %q, want sqlite", rec.Engine)
+	rec, _ := st.LookupSnapshot(ctx, "fp_unknown")
+	if rec.Engine != "sqlight" {
+		t.Errorf("unknown engine rewritten: stored %q, want sqlight", rec.Engine)
 	}
 }

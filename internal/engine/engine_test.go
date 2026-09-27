@@ -24,7 +24,8 @@ func TestCanonical(t *testing.T) {
 		"elasticsearch": {FamilyES, true},
 		"opensearch":    {FamilyES, true},
 		"s3":            {FamilyS3, true},
-		"sqlite":        {"", false},
+		"sqlite":        {FamilyFile, true},
+		"duckdb":        {FamilyFile, true},
 		"":              {"", false},
 	}
 	for in, want := range cases {
@@ -46,6 +47,7 @@ func TestFamilyScope(t *testing.T) {
 		FamilyRedis:    ScopePrefix,
 		FamilyES:       ScopePrefix,
 		FamilyS3:       ScopePrefix,
+		FamilyFile:     ScopeName,
 	}
 	for fam, want := range cases {
 		if got := fam.Scope(); got != want {

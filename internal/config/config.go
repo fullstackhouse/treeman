@@ -420,6 +420,27 @@ type ConnectionsConfig struct {
 	// `databases:` entry uses `engine: s3`. One connection serves many
 	// per-worktree buckets named via the entry's `key_prefix`.
 	S3 *S3Conn `yaml:"s3,omitempty"`
+
+	// File-backed engines (sqlite / duckdb). Entirely optional — files
+	// need no server, so the family works with no connections block at
+	// all. `base_dir` relocates the per-worktree database files (and
+	// their cached templates) outside the worktree; by default each
+	// file lives at its rendered `name_template` path inside the
+	// worktree.
+	Sqlite *SqliteConn `yaml:"sqlite,omitempty"`
+}
+
+// SqliteConn is the (optional) connection block for the file-backed
+// engine family. There is nothing to dial; the only knob is where the
+// per-worktree database files live.
+type SqliteConn struct {
+	// BaseDir is the directory per-worktree database files are placed
+	// in (the rendered `name_template` file name is joined onto it).
+	// Empty means "inside the worktree", the default. Templates are
+	// cached as siblings of the rendered files, so keep the directory
+	// on the same filesystem as the worktrees to get reflink
+	// (copy-on-write) clones.
+	BaseDir string `yaml:"base_dir,omitempty"`
 }
 
 // ContainerRef points a connection at a running container or compose

@@ -98,7 +98,7 @@ test-e2e batch="all" parallel="4":
     BATCHES[watcher]="autofetch branchscoped deltawatch headwatcher hook_cwd lifecycle main_worktree main_worktree_db oncheckout onfilechange onfilechange_redis watcher"
     BATCHES[features]="clones_auto coldbuild_siblings compression ctrrestart extras fanout log_level logs misc patches poolmax race retention sighup snapshot_gc switchback teardown worktrees_root"
     BATCHES[cli]="cli cli_engine cli_surface mcp mcp_write mongo_dump"
-    BATCHES[lite]="cli_surface logs notifications"
+    BATCHES[lite]="cli_surface logs notifications file_engine"
 
     ORDER=(engines fw1 fw2 matrix watcher features cli)
 
@@ -170,7 +170,7 @@ e2e-prepull batch:
     BATCHES[watcher]="autofetch branchscoped deltawatch headwatcher hook_cwd lifecycle main_worktree main_worktree_db oncheckout onfilechange onfilechange_redis watcher"
     BATCHES[features]="clones_auto coldbuild_siblings compression ctrrestart extras fanout log_level logs misc patches poolmax race retention sighup snapshot_gc switchback teardown worktrees_root"
     BATCHES[cli]="cli cli_engine cli_surface mcp mcp_write mongo_dump"
-    BATCHES[lite]="cli_surface logs notifications"
+    BATCHES[lite]="cli_surface logs notifications file_engine"
 
     suites=${BATCHES[{{batch}}]:-}
     if [ -z "$suites" ]; then
@@ -207,7 +207,7 @@ test-e2e-list:
     echo "watcher  : autofetch branchscoped deltawatch headwatcher hook_cwd lifecycle main_worktree main_worktree_db oncheckout onfilechange onfilechange_redis watcher"
     echo "features : clones_auto coldbuild_siblings compression ctrrestart extras fanout log_level logs misc patches poolmax race retention sighup snapshot_gc switchback teardown worktrees_root"
     echo "cli      : cli cli_engine cli_surface mcp mcp_write mongo_dump"
-    echo "lite     : cli_surface logs notifications (container-free)"
+    echo "lite     : cli_surface logs notifications file_engine (container-free)"
 
 check: lint test sync-schema sync-docs sync-flake
 

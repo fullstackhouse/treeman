@@ -323,6 +323,69 @@ func (d DatabaseConfig) validateS3(path string) error {
 	return nil
 }
 
+// validateFile enforces the file-backed family's constraints (sqlite
+// / duckdb). The rendered name_template IS the database file path, so
+// it must stay relative and inside the worktree (or under
+// connections.sqlite.base_dir). There is no server-side namespace, so
+// key_prefix and branch_scoped don't apply; dump / migrate / seed /
+// test_clones all work, with one caveat: duckdb files can't execute
+// .sql dumps from Go, so a duckdb entry seeds by copying a base file.
+func (d DatabaseConfig) validateFile(path string) error {
+	if strings.HasPrefix(d.NameTemplate, "/") || strings.HasPrefix(d.NameTemplate, "\\") {
+		return fmt.Errorf(
+			"%s: name_template %q must be a relative path (the file is placed inside the worktree, or under connections.sqlite.base_dir)",
+			path, d.NameTemplate,
+		)
+	}
+	for seg := range strings.SplitSeq(d.NameTemplate, "/") {
+		if seg == ".." {
+			return fmt.Errorf(
+				"%s: name_template %q must not escape the worktree (no %q segments)",
+				path, d.NameTemplate, "..",
+			)
+		}
+	}
+	if d.KeyPrefix != "" {
+		return fmt.Errorf(
+			"%s: engine %q does not support `key_prefix:` (file-backed engines scope by file path, not key prefix)",
+			path, d.Engine,
+		)
+	}
+	if d.BranchScoped {
+		return fmt.Errorf(
+			"%s: engine %q does not support `branch_scoped:` (no server to hold a per-branch durable namespace; the default per-worktree model is the isolation)",
+			path,
+			d.Engine,
+		)
+	}
+	if d.Engine == "duckdb" {
+		for _, dump := range d.Dump {
+			if strings.HasSuffix(strings.ToLower(dump.Path), ".sql") {
+				return fmt.Errorf(
+					"%s: engine \"duckdb\" cannot execute .sql dump %q (no SQL executable from Go) — seed by copying a base .duckdb file, or use engine \"sqlite\" for .sql dumps",
+					path,
+					dump.Path,
+				)
+			}
+		}
+	}
+	return nil
+}
+
+// validateFamily dispatches the families with constraint rules beyond
+// the shared engine checks. Families without extra rules fall through
+// with no error.
+func (d DatabaseConfig) validateFamily(fam engine.Family, path string) error {
+	switch fam {
+	case engine.FamilyS3:
+		return d.validateS3(path)
+	case engine.FamilyFile:
+		return d.validateFile(path)
+	default:
+		return nil
+	}
+}
+
 func (d DatabaseConfig) validate(path string) error {
 	var errs []error
 	if d.Engine == "" {
@@ -335,10 +398,9 @@ func (d DatabaseConfig) validate(path string) error {
 	if fam.Scope() == engine.ScopeName && d.NameTemplate == "" {
 		return fmt.Errorf("%s: name_template is required for engine %q (used to compute the per-worktree database name)", path, d.Engine)
 	}
-	if fam == engine.FamilyS3 {
-		if err := d.validateS3(path); err != nil {
-			return err
-		}
+	// Per-family constraint checks (S3, file-backed).
+	if err := d.validateFamily(fam, path); err != nil {
+		return err
 	}
 
 	if d.NameTemplate != "" {

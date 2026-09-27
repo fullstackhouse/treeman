@@ -358,6 +358,11 @@ func dbSchemaDumpTool(ctx context.Context, _ *mcpsdk.CallToolRequest, in dbSchem
 		schema, err = dbSchemaRedis(ctx, cfg, in.DB)
 	case engine.FamilyS3:
 		err = fmt.Errorf("engine %q is an object store — it has no schema to dump", in.Engine)
+	case engine.FamilyFile:
+		err = fmt.Errorf(
+			"schema dump is not supported for engine %q (file-backed databases have no catalog API; query sqlite_master via a sqlite client instead)",
+			in.Engine,
+		)
 	}
 	if err != nil {
 		return nil, out, err
@@ -527,6 +532,11 @@ func dbQueryTool(ctx context.Context, _ *mcpsdk.CallToolRequest, in dbQueryIn) (
 		rows, err = dbQueryRedis(ctx, cfg, in)
 	case engine.FamilyS3:
 		err = fmt.Errorf("engine %q is an object store — it is not queryable; use engine_status to inspect buckets", in.Engine)
+	case engine.FamilyFile:
+		err = fmt.Errorf(
+			"db_query is not wired for engine %q yet (file-backed); open the database file directly with any sqlite client",
+			in.Engine,
+		)
 	}
 	if err != nil {
 		return nil, out, err
@@ -1565,6 +1575,11 @@ func probeConnection(ctx context.Context, fam engine.Family, dsn, repo string) (
 		// engine_status probe (probeS3), which dials via the configured
 		// connection block. Redirect rather than pretend support.
 		return false, "", errors.New("s3 connectivity is reported via engine_status, not db_connect")
+	case engine.FamilyFile:
+		// Files have no connection to probe: the rendered file's
+		// existence is the reachability signal, surfaced by prepare and
+		// teardown through the normal flow.
+		return false, "", errors.New("file-backed engines have no connection to probe; check that the rendered database file exists")
 	}
 	return false, "", fmt.Errorf("no probe handler for family %s", fam)
 }
@@ -1810,6 +1825,11 @@ func containerRefForEngine(cfg *config.Config, eng string) (*config.ContainerRef
 			return nil, errors.New("connections.s3 not configured")
 		}
 		ref = &cfg.Connections.S3.ContainerRef
+	case engine.FamilyFile:
+		return nil, fmt.Errorf(
+			"engine %s is file-backed — there is no server container; check the database file and app logs directly",
+			eng,
+		)
 	}
 	if ref == nil || (ref.Container == "" && ref.ComposeService == "") {
 		return nil, fmt.Errorf("engine %s has no container/compose ref — check the host engine logs directly", eng)

@@ -19,11 +19,13 @@ import (
 // looped forever in the eviction sweeps emitting WARN spam.
 //
 // Drives dropTemplate with a Config whose ConnectionsConfig has
-// every block nil. A handled engine returns "connections.<x> not
-// configured" (proves the switch arm fired and tried to connect);
-// an unhandled engine returns "unsupported engine" (the
-// regression). Any new alias added to engine.Known without a
-// matching arm here fails this test.
+// every block nil. A handled engine either returns
+// "connections.<x> not configured" (proves the arm fired and tried
+// to connect) or — for the file family, which needs no connection
+// block — the absolute-path guard on the bare template name (same
+// proof: the arm fired and reached the driver). An unhandled engine
+// returns "unsupported engine" (the regression). Any new alias
+// added to engine.Known without a matching arm here fails this test.
 func TestDropTemplateCoversEveryKnownEngine(t *testing.T) {
 	cfg := &config.Config{}
 	for _, eng := range engine.Known {
@@ -36,8 +38,9 @@ func TestDropTemplateCoversEveryKnownEngine(t *testing.T) {
 			if strings.Contains(err.Error(), "unsupported engine") {
 				t.Fatalf("engine %q falls into unsupported-engine default: %v", eng, err)
 			}
-			if !strings.Contains(err.Error(), "not configured") {
-				t.Fatalf("engine %q: expected 'not configured' error, got: %v", eng, err)
+			if !strings.Contains(err.Error(), "not configured") &&
+				!strings.Contains(err.Error(), "must be absolute") {
+				t.Fatalf("engine %q: expected 'not configured' or absolute-path guard, got: %v", eng, err)
 			}
 		})
 	}
@@ -48,7 +51,7 @@ func TestDropTemplateCoversEveryKnownEngine(t *testing.T) {
 // error — the audit shouldn't mask real typos.
 func TestDropTemplateRejectsUnknownEngine(t *testing.T) {
 	cfg := &config.Config{}
-	c := store.SnapshotEvictionCandidate{Engine: "sqlite", TemplateName: "_tm_x"}
+	c := store.SnapshotEvictionCandidate{Engine: "notanengine", TemplateName: "_tm_x"}
 	err := dropTemplate(context.Background(), cfg, c)
 	if err == nil || !strings.Contains(err.Error(), "unsupported engine") {
 		t.Fatalf("unknown engine: want 'unsupported engine' error, got %v", err)

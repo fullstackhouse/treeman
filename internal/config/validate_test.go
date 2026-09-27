@@ -468,3 +468,86 @@ func TestValidate(t *testing.T) {
 		})
 	}
 }
+
+// TestValidateFileFamily locks the file-backed engines' (sqlite /
+// duckdb) constraints: name_template IS the database file path, so it
+// must be relative and stay inside the worktree (or base_dir);
+// key_prefix and branch_scoped have no file-family meaning; and a
+// duckdb entry can't execute .sql dumps from Go.
+func TestValidateFileFamily(t *testing.T) {
+	cases := []struct {
+		name string
+		d    DatabaseConfig
+		want string
+	}{
+		{
+			name: "sqlite with relative path ok",
+			d:    DatabaseConfig{Engine: "sqlite", NameTemplate: "data/{slug}.db"},
+			want: "",
+		},
+		{
+			name: "duckdb with base-file dump ok",
+			d: DatabaseConfig{
+				Engine:       "duckdb",
+				NameTemplate: "warehouse/{slug}.duckdb",
+				Dump:         DumpList{{Path: "fixtures/seed.duckdb"}},
+			},
+			want: "",
+		},
+		{
+			name: "sqlite with .sql dump ok",
+			d: DatabaseConfig{
+				Engine:       "sqlite",
+				NameTemplate: "data/{slug}.db",
+				Dump:         DumpList{{Path: "fixtures/schema.sql"}},
+			},
+			want: "",
+		},
+		{
+			name: "absolute name_template rejected",
+			d:    DatabaseConfig{Engine: "sqlite", NameTemplate: "/tmp/app.db"},
+			want: "relative path",
+		},
+		{
+			name: "dotdot escape rejected",
+			d:    DatabaseConfig{Engine: "sqlite", NameTemplate: "data/../../escape.db"},
+			want: `escape`,
+		},
+		{
+			name: "key_prefix rejected",
+			d:    DatabaseConfig{Engine: "sqlite", NameTemplate: "data/{slug}.db", KeyPrefix: "app:{slug}:"},
+			want: "key_prefix",
+		},
+		{
+			name: "branch_scoped rejected",
+			d:    DatabaseConfig{Engine: "sqlite", NameTemplate: "data/{slug}.db", BranchScoped: true},
+			want: "branch_scoped",
+		},
+		{
+			name: "duckdb .sql dump rejected",
+			d: DatabaseConfig{
+				Engine:       "duckdb",
+				NameTemplate: "warehouse/{slug}.duckdb",
+				Dump:         DumpList{{Path: "fixtures/schema.sql"}},
+			},
+			want: ".sql",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := c.d.validate("databases[0]")
+			if c.want == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", c.want)
+			}
+			if !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("error %q should contain %q", err, c.want)
+			}
+		})
+	}
+}

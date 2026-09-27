@@ -22,6 +22,7 @@ const (
 	FamilyRedis    Family = "redis"         // redis / valkey / dragonfly
 	FamilyES       Family = "elasticsearch" // elasticsearch / opensearch
 	FamilyS3       Family = "s3"            // s3 (object storage — lifecycle only)
+	FamilyFile     Family = "file"          // sqlite / duckdb — file-backed, no server
 )
 
 // Known is every engine string treeman accepts under
@@ -36,6 +37,7 @@ var Known = []string{
 	"redis", "valkey", "dragonfly",
 	"elasticsearch", "opensearch",
 	"s3",
+	"sqlite", "duckdb",
 }
 
 // KnownList returns the engine alias list joined as ", " — used in
@@ -61,6 +63,8 @@ func Canonical(eng string) (Family, bool) {
 		return FamilyES, true
 	case "s3":
 		return FamilyS3, true
+	case "sqlite", "duckdb":
+		return FamilyFile, true
 	default:
 		return "", false
 	}

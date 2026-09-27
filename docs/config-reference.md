@@ -71,6 +71,8 @@ connections:
         compose_project: '...'
         container_engine: '...'
         container_network: '...'
+    sqlite:
+        base_dir: '...'
 # Snapshot retention/eviction policy for cached post-migration
 snapshots:
     cap_per_repo: 0
@@ -166,6 +168,8 @@ connections:
         compose_project: '...'
         container_engine: '...'
         container_network: '...'
+    sqlite:
+        base_dir: '...'
 # Worktree creation behaviour: root path, symlinked mirrors
 worktrees:
     root: '...'
@@ -546,6 +550,15 @@ Ceph RGW, Backblaze B2, Cloudflare R2, ...). Required when any
 `databases:` entry uses `engine: s3`. One connection serves many
 per-worktree buckets named via the entry's `key_prefix`.
 
+#### `sqlite` *([SqliteConn](#sqliteconn))*
+
+File-backed engines (sqlite / duckdb). Entirely optional — files
+need no server, so the family works with no connections block at
+all. `base_dir` relocates the per-worktree database files (and
+their cached templates) outside the worktree; by default each
+file lives at its rendered `name_template` path inside the
+worktree.
+
 ### CustomFramework
 
 CustomFramework — `frameworks:` entry, lets users declare
@@ -648,7 +661,7 @@ for `redis` (same wire protocol, same key-prefix scoping).
 The rendered schema's enum is injected from engine.Known by
 schema.Reflect, so the alias list lives in exactly one place.
 
-_Allowed: `mysql`, `mariadb`, `tidb`, `postgres`, `postgresql`, `mongodb`, `redis`, `valkey`, `dragonfly`, `elasticsearch`, `opensearch`, `s3`_
+_Allowed: `mysql`, `mariadb`, `tidb`, `postgres`, `postgresql`, `mongodb`, `redis`, `valkey`, `dragonfly`, `elasticsearch`, `opensearch`, `s3`, `sqlite`, `duckdb`_
 
 #### `name_template` *(string)*
 
@@ -1237,6 +1250,21 @@ dir exceeds N gigabytes on disk. Default 50.
 
 Cadence (minutes) of the daemon's periodic snapshot-sweep
 goroutine. Default 60.
+
+### SqliteConn
+
+SqliteConn is the (optional) connection block for the file-backed
+engine family. There is nothing to dial; the only knob is where the
+per-worktree database files live.
+
+#### `base_dir` *(string)*
+
+BaseDir is the directory per-worktree database files are placed
+in (the rendered `name_template` file name is joined onto it).
+Empty means "inside the worktree", the default. Templates are
+cached as siblings of the rendered files, so keep the directory
+on the same filesystem as the worktrees to get reflink
+(copy-on-write) clones.
 
 ### StatusBuckets
 

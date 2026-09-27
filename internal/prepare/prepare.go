@@ -35,6 +35,7 @@ import (
 	"github.com/stubbedev/treeman/internal/db/dumpload"
 	"github.com/stubbedev/treeman/internal/db/engineconn"
 	dbes "github.com/stubbedev/treeman/internal/db/es"
+	dbfile "github.com/stubbedev/treeman/internal/db/filedb"
 	dbmongo "github.com/stubbedev/treeman/internal/db/mongo"
 	dbmysql "github.com/stubbedev/treeman/internal/db/mysql"
 	dbpostgres "github.com/stubbedev/treeman/internal/db/postgres"
@@ -294,6 +295,9 @@ type cloneRestorer func(ctx context.Context, template, target string) error
 var fanOutLimits = map[engine.Family]int{
 	engine.FamilyMySQL:    4,
 	engine.FamilyPostgres: 8,
+	// File copies: no connection budget to respect — the cap is disk
+	// throughput, and reflink clones are metadata-only where supported.
+	engine.FamilyFile: 8,
 }
 
 // innerConnsPerRestore models how many backend connections one
@@ -704,6 +708,8 @@ func prepareOneEngine(
 		return prepareES(ctx, cfg, d, dbIdx, tplCtx, worktreePath, st, repoID, worktreeID, inheritedEnv)
 	case engine.FamilyS3:
 		return prepareS3(ctx, cfg, d, dbIdx, tplCtx, worktreePath, st, repoID, worktreeID, inheritedEnv)
+	case engine.FamilyFile:
+		return prepareFileEngine(ctx, cfg, d, tplCtx, worktreePath, st, repoID, worktreeID, inheritedEnv)
 	}
 	return Outcome{}, nil
 }
@@ -3061,6 +3067,226 @@ func prepareS3(
 	return Outcome{Engine: "s3", SourceDB: bucket}, nil
 }
 
+// prepareFileEngine is the file-backed family's prepare (engine
+// "sqlite" / "duckdb"). The "database" is a regular file at the
+// rendered `name_template` path (inside the worktree, or under
+// connections.sqlite.base_dir), the template cache is a fingerprint-
+// named sibling file, and every snapshot op is a reflink-preferring
+// copy. No server, so there's no connection probe and no skip path —
+// the family is always wired up.
+func prepareFileEngine(
+	ctx context.Context,
+	cfg *config.Config,
+	d config.DatabaseConfig,
+	tplCtx template.Context,
+	worktreePath string,
+	st *store.Store,
+	repoID, worktreeID int64,
+	inheritedEnv map[string]string,
+) (Outcome, error) {
+	started := time.Now()
+	rendered, err := template.Render(d.NameTemplate, tplCtx)
+	if err != nil {
+		return Outcome{}, fmt.Errorf("render name_template: %w", err)
+	}
+	sourceFile, err := dbfile.SourcePathFrom(cfg, worktreePath, rendered)
+	if err != nil {
+		return Outcome{}, err
+	}
+	key, inputs := computeKeyAndVectors(ctx, st, d, worktreePath, "")
+	templatePath := dbfile.TemplatePath(sourceFile, key.Fingerprint())
+
+	// See prepareMySQL's pin comment — same race, same fix.
+	unpinTemplate := snapshot.Pin(key.Fingerprint())
+	defer unpinTemplate()
+
+	_ = st.WriteEvent(ctx, store.LevelInfo, store.EvtPrepareStart,
+		fmt.Sprintf("engine=%s source=%s template=%s", d.Engine, sourceFile, templatePath),
+		repoID, worktreeID, "", 0, map[string]string{
+			"engine":      d.Engine,
+			"source_db":   sourceFile,
+			"template":    templatePath,
+			"fingerprint": key.Fingerprint(),
+		})
+
+	// The shared cache-hit path resolves clone names with the bare
+	// render (they're namespace names for the networked engines); the
+	// file family needs them on the family base, so every name that
+	// crosses the boundary gets resolved here.
+	resolveFile := func(name string) (string, error) {
+		if filepath.IsAbs(name) {
+			return name, nil
+		}
+		return dbfile.SourcePathFrom(cfg, worktreePath, name)
+	}
+	fileExists := func(_ context.Context, name string) (bool, error) {
+		p, perr := resolveFile(name)
+		if perr != nil {
+			return false, perr
+		}
+		return dbfile.Exists(p)
+	}
+	fileRestore := func(_ context.Context, tmpl, target string) error {
+		p, perr := resolveFile(target)
+		if perr != nil {
+			return perr
+		}
+		return dbfile.CopyDatabase(tmpl, p)
+	}
+
+	// Cache hit?
+	out, done, flight, err := cacheHitGeneric(
+		ctx,
+		fileExists,
+		fileRestore,
+		d,
+		tplCtx,
+		worktreePath,
+		st,
+		repoID,
+		worktreeID,
+		sourceFile,
+		key,
+		0,
+		started,
+	)
+	defer flight.finish()
+	if done || err != nil {
+		for i, c := range out.Clones {
+			if p, perr := resolveFile(c); perr == nil {
+				out.Clones[i] = p
+			}
+		}
+		return out, err
+	}
+
+	// Cold build: drop the family, seed the source file, snapshot it.
+	if err := fileColdBuildSteps(ctx, d, tplCtx, worktreePath, st, repoID, worktreeID, sourceFile, templatePath, inheritedEnv); err != nil {
+		return Outcome{}, err
+	}
+	snapStart := time.Now()
+	if err := dbfile.CopyDatabase(sourceFile, templatePath); err != nil {
+		return Outcome{}, fmt.Errorf("file snapshot create %s → %s: %w", sourceFile, templatePath, err)
+	}
+	emitPhaseDone(ctx, st, repoID, worktreeID, d.Engine, sourceFile, "snapshot-create", snapStart)
+	recordSnapshot(ctx, st, key, d.Engine, "", sourceFile, templatePath, inputs, repoID)
+	spawnEvict(cfg, st, repoID)
+
+	clones, err := fileCloneNames(cfg, d, tplCtx, worktreePath)
+	if err != nil {
+		return Outcome{}, err
+	}
+	if err := fanOutClones(ctx, st, repoID, worktreeID, fileRestore, templatePath, clones, d.Engine, d.Fanout, 0); err != nil {
+		return Outcome{}, err
+	}
+
+	ms := time.Since(started).Milliseconds()
+	_ = st.WriteEvent(ctx, store.LevelInfo, store.EvtPrepareEnd,
+		fmt.Sprintf("cold_build clones=%d duration=%dms", len(clones), ms),
+		repoID, worktreeID, "", 0, map[string]string{
+			"engine":      d.Engine,
+			"source_db":   sourceFile,
+			"template":    templatePath,
+			"clones":      strconv.Itoa(len(clones)),
+			"cache_hit":   "false",
+			"duration_ms": strconv.FormatInt(ms, 10),
+		})
+	return Outcome{
+		Engine:       d.Engine,
+		SourceDB:     sourceFile,
+		TemplateName: templatePath,
+		Fingerprint:  key.Fingerprint(),
+		CacheHit:     false,
+		Clones:       clones,
+	}, nil
+}
+
+// fileCloneNames resolves the test-clone fan-out names and joins them
+// onto the family's base dir, exactly like the source path.
+func fileCloneNames(cfg *config.Config, d config.DatabaseConfig, tplCtx template.Context, worktreePath string) ([]string, error) {
+	rendered, err := resolveCloneNames(d.TestClones, tplCtx, worktreePath)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, len(rendered))
+	for i, r := range rendered {
+		p, perr := dbfile.SourcePathFrom(cfg, worktreePath, r)
+		if perr != nil {
+			return nil, perr
+		}
+		out[i] = p
+	}
+	return out, nil
+}
+
+// fileColdBuildSteps rebuilds the source database file from scratch:
+// drop the whole family (source + template + clones), then seed —
+// binary dump files are copied in as the base database, .sql dumps
+// execute against it in list order (a .sql dump with no preceding
+// binary seeds an empty sqlite database) — then migrate + seed runner
+// phases, with {target_db} resolving to the file path.
+func fileColdBuildSteps(
+	ctx context.Context,
+	d config.DatabaseConfig,
+	tplCtx template.Context,
+	worktreePath string,
+	st *store.Store,
+	repoID, worktreeID int64,
+	sourceFile, templatePath string,
+	inheritedEnv map[string]string,
+) error {
+	dropped, err := dbfile.RemoveDatabase(sourceFile)
+	if err != nil {
+		return err
+	}
+	if t, terr := dbfile.RemoveDatabase(templatePath); terr == nil {
+		dropped = append(dropped, t...)
+	}
+	if cfgLikeClones, cerr := dbfile.CloneSiblings(filepath.Dir(sourceFile), filepath.Base(sourceFile)); cerr == nil {
+		for _, s := range cfgLikeClones {
+			if r, rerr := dbfile.RemoveDatabase(s); rerr == nil {
+				dropped = append(dropped, r...)
+			}
+		}
+	}
+	emitColdBuildDrop(ctx, st, repoID, worktreeID, d.Engine,
+		fmt.Sprintf("%s (%d files)", sourceFile, len(dropped)))
+	dumps, err := dumpsReady(d.Dump, worktreePath)
+	if err != nil {
+		return err
+	}
+	for i, dr := range dumps {
+		stepStart := time.Now()
+		var strategy string
+		if strings.HasSuffix(strings.ToLower(dr.Path), ".sql") {
+			if err := dbfile.ApplySQLDump(ctx, sourceFile, dr.Path); err != nil {
+				return fmt.Errorf("load dump %s: %w", dr.Path, err)
+			}
+			strategy = "sql-apply"
+		} else {
+			if err := dbfile.CopyDatabase(dr.Path, sourceFile); err != nil {
+				return fmt.Errorf("load dump %s: %w", dr.Path, err)
+			}
+			strategy = "file-copy"
+		}
+		emitDumpLoadPhase(ctx, st, repoID, worktreeID, d.Engine, sourceFile, dr.Path,
+			i, len(dumps), stepStart, strategy)
+	}
+	if d.Migrate != nil {
+		if err := runPhase(ctx, st, repoID, worktreeID, d, tplCtx, worktreePath,
+			sourceFile, "migrate", runner.FromMigrate(*d.Migrate), inheritedEnv); err != nil {
+			return err
+		}
+	}
+	if d.Seed != nil {
+		if err := runPhase(ctx, st, repoID, worktreeID, d, tplCtx, worktreePath,
+			sourceFile, "seed", runner.FromSeed(*d.Seed), inheritedEnv); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // esColdBuildSteps runs the Elasticsearch cold-build populate phase:
 // filtered drop of the source-prefix indices, optionally bulk-load a
 // dump NDJSON, then run migrate and seed. Extracted verbatim from
@@ -3665,6 +3891,25 @@ func teardownOne(
 	target, err := template.Render(tmpl, tplCtx)
 	if err != nil {
 		return err
+	}
+	if fam == engine.FamilyFile {
+		// The file family's "name" is a rendered relative path; resolve
+		// it onto the same base (worktree root or connections.sqlite
+		// .base_dir) prepare used, so teardown reaps the file that was
+		// actually built. The worktree row carries the path — teardown
+		// runs before the row goes away.
+		wtPath, werr := st.WorktreePathByID(ctx, worktreeID)
+		if werr != nil {
+			return werr
+		}
+		var baseDir string
+		if cfg.Connections.Sqlite != nil {
+			baseDir = cfg.Connections.Sqlite.BaseDir
+		}
+		target, err = dbfile.SourcePath(baseDir, wtPath, target)
+		if err != nil {
+			return err
+		}
 	}
 	conn, _, err := engineconn.Connect(ctx, cfg, fam)
 	if err != nil {
