@@ -316,10 +316,14 @@ func copyWalk(ctx context.Context, src, dst string, info os.FileInfo, g *errgrou
 }
 
 // copyRegularFile copies src → dst and returns the bytes written.
-// It first attempts a reflink clone (constant-time copy-on-write on
-// btrfs/XFS — see cloneFile), falling back to a streamed io.Copy on
-// filesystems without reflink support.
+// It first attempts a pre-create APFS clone (constant-time COW — see
+// tryPathClone), then a reflink clone into the opened fd (btrfs/XFS —
+// see cloneFile), falling back to a streamed io.Copy when neither
+// filesystem supports it.
 func copyRegularFile(src, dst string, perm os.FileMode) (int64, error) {
+	if n, cloned := tryPathClone(src, dst, perm); cloned {
+		return n, nil
+	}
 	sf, err := os.Open(src)
 	if err != nil {
 		return 0, err
