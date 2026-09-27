@@ -969,9 +969,16 @@ func DaemonCmd() *cli.Command {
 				Action: daemonReload,
 			},
 			{
-				Name:   "status",
-				Usage:  "show whether treemand is running (pid, version, watchers)",
-				Flags:  []cli.Flag{&cli.BoolFlag{Name: "json"}},
+				Name:        "status",
+				Usage:       "show whether treemand is running (pid, version, watchers)",
+				Description: "Exits 0 whether or not the daemon is up (a stopped daemon is a\nstatus, not an error) — pass --fail-if-down for scripting gates, which\nescalates a missing/mismatched daemon to exit code 3.",
+				Flags: []cli.Flag{
+					&cli.BoolFlag{Name: "json"},
+					&cli.BoolFlag{
+						Name:  "fail-if-down",
+						Usage: "exit 3 when the daemon is unreachable (or speaks the wrong protocol) instead of 0",
+					},
+				},
 				Action: daemonStatus,
 			},
 			{
@@ -1126,17 +1133,29 @@ func daemonStatus(ctx context.Context, c *cli.Command) error {
 		if mismatch {
 			out["status"] = "protocol-mismatch"
 		}
-		return jsonStream(out)
+		if jerr := jsonStream(out); jerr != nil {
+			return jerr
+		}
+		if c.Bool("fail-if-down") && err != nil {
+			return cli.Exit("", 3)
+		}
+		return nil
 	}
 	if err != nil {
 		if mismatch {
 			ui.Warn("treemand protocol mismatch")
 			ui.Hint("%s", pme.Error())
-			return nil
+		} else {
+			ui.Warn("daemon not running")
+			ui.Hint("start it with: treeman daemon start")
+			ui.Hint("or auto-launch on login: treeman daemon install")
 		}
-		ui.Warn("daemon not running")
-		ui.Hint("start it with: treeman daemon start")
-		ui.Hint("or auto-launch on login: treeman daemon install")
+		// A stopped daemon is a status, not an error — unless the caller
+		// is a script gate that needs a distinct signal. Exit 3, not 1:
+		// 1 stays reserved for hard command failures.
+		if c.Bool("fail-if-down") {
+			return cli.Exit("", 3)
+		}
 		return nil
 	}
 	ui.Success("treemand %s — pid=%d watchers=%d", ui.Bold(resp.DaemonVersion), resp.Pid, resp.WatcherCount)

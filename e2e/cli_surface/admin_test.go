@@ -4,6 +4,8 @@ package cli_surface_e2e
 
 import (
 	"encoding/json"
+	"errors"
+	"os/exec"
 	"strconv"
 	"strings"
 	"testing"
@@ -118,6 +120,22 @@ func TestDaemonStatus(t *testing.T) {
 		}
 		if len(got) == 0 {
 			t.Errorf("expected non-empty daemon-status JSON: %v", got)
+		}
+	})
+
+	// TestDaemonStatusFailIfDown pins the scripting gate (#84): without
+	// the flag a stopped daemon stays exit 0 (a status, not an error);
+	// with it the CLI escalates to exit code 3 — distinct from 1 so
+	// CI can tell "daemon down" from "command failed".
+	t.Run("--fail-if-down exits 3 with daemon down, 0 exit stays for plain", func(t *testing.T) {
+		res := e.run(t, repo, "daemon", "status", "--fail-if-down")
+		var ee *exec.ExitError
+		if !errors.As(res.err, &ee) || ee.ExitCode() != 3 {
+			t.Fatalf("--fail-if-down with daemon down: want exit 3, got err=%v", res.err)
+		}
+		plain := e.run(t, repo, "daemon", "status")
+		if plain.err != nil {
+			t.Fatalf("plain status with daemon down should stay exit 0, got %v", plain.err)
 		}
 	})
 }

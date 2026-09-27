@@ -787,9 +787,16 @@ ask the daemon to re-read config + restart watchers (no process restart)
 
 show whether treemand is running (pid, version, watchers)
 
+```
+Exits 0 whether or not the daemon is up (a stopped daemon is a
+status, not an error) — pass --fail-if-down for scripting gates, which
+escalates a missing/mismatched daemon to exit code 3.
+```
+
 | Flag | Usage |
 |---|---|
 | `--json` |  |
+| `--fail-if-down` | exit 3 when the daemon is unreachable (or speaks the wrong protocol) instead of 0 |
 
 ### `treeman daemon state`
 
@@ -992,4 +999,19 @@ All three expose the same `tm` usage matrix:
     tm -                 # cd back to main repo
     tm - --remove        # cd back + drop current worktree if clean
     tm list              # passthrough to `treeman worktree list`
+
+## Exit codes
+
+Scripts can rely on the following process exit codes:
+
+| Code | Meaning |
+|---|---|
+| 0 | Command succeeded — including informational results like `daemon status` reporting the daemon down (a status, not a failure) |
+| 1 | Command failed: bad arguments, unreachable engine, denied confirmation, any hard error |
+| 3 | Daemon unavailable — only from `treeman daemon status --fail-if-down` (or `--json` with the flag): a CI gate signal distinct from 1, so "daemon down" never reads as "command broken" |
+
+`--json` output shape is part of the same contract: a failing command's
+JSON (when any) lands on stdout, human diagnostics on stderr. `daemon
+status --json` always emits a JSON object with a `status` field of
+`running`, `not-running`, or `protocol-mismatch`.
 
