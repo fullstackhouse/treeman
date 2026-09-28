@@ -7,10 +7,12 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/stubbedev/treeman/internal/runid"
 	"github.com/stubbedev/treeman/internal/store"
 	"github.com/stubbedev/treeman/pkg/rpc"
 )
@@ -34,47 +36,57 @@ func shortSocketPath(t *testing.T) string {
 	return p
 }
 
-// TestStreamingSubscribe_EndToEnd spins up a unix-socket listener,
-// opens an rpc.SubscribeEvents stream against it, writes events to
-// the daemon's store, and asserts that matching events arrive on the
-// client channel. Covers the full hook-driven push path end-to-end —
-// the foundation for logs_subscribe's "mode=push".
-func TestStreamingSubscribe_EndToEnd(t *testing.T) {
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-
+// startStreamServer binds a unix socket at a short path, points
+// TREEMAN_SOCKET at it, and serves every accepted connection through
+// DispatchStreaming — the streaming half of cmd/treemand's handleConn,
+// inline to avoid importing the cmd package. Returns the daemon store
+// events are written to.
+func startStreamServer(ctx context.Context, t *testing.T) *store.Store {
+	t.Helper()
 	sockPath := shortSocketPath(t)
 	t.Setenv("TREEMAN_SOCKET", sockPath)
 	ln, err := net.Listen("unix", sockPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = ln.Close() }()
-
+	t.Cleanup(func() { _ = ln.Close() })
 	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "t.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = s.Close() }()
+	t.Cleanup(func() { _ = s.Close() })
 	st := NewState(ctx, s)
-
-	// Minimal accept loop — mirrors cmd/treemand/main.go's handleConn
-	// but inline to avoid importing the cmd package.
 	go func() {
-		conn, err := ln.Accept()
-		if err != nil {
-			return
-		}
-		defer func() { _ = conn.Close() }()
-		dec := json.NewDecoder(conn)
-		var req rpc.Request
-		if err := dec.Decode(&req); err != nil {
-			return
-		}
-		if IsStreamingMethod(req.Method) {
-			DispatchStreaming(ctx, st, conn, req)
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer func() { _ = conn.Close() }()
+				var req rpc.Request
+				if err := json.NewDecoder(conn).Decode(&req); err != nil {
+					return
+				}
+				if IsStreamingMethod(req.Method) {
+					DispatchStreaming(ctx, st, conn, req)
+				}
+			}()
 		}
 	}()
+	return s
+}
+
+// TestStreamingSubscribe_EndToEnd opens an rpc.SubscribeEvents stream,
+// writes events to the daemon's store, and asserts that matching events
+// arrive on the client channel. Covers the full hook-driven push path
+// end-to-end — the foundation for logs_subscribe's "mode=push". No sleep
+// between subscribe and write: SubscribeEvents returns only after the
+// daemon acknowledged the live hook.
+func TestStreamingSubscribe_EndToEnd(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	s := startStreamServer(ctx, t)
 
 	stream, stop, err := rpc.SubscribeEvents(ctx, rpc.EventSubscribeArgs{
 		EventTypes: []string{"unit_test_match"},
@@ -83,9 +95,6 @@ func TestStreamingSubscribe_EndToEnd(t *testing.T) {
 		t.Fatalf("SubscribeEvents: %v", err)
 	}
 	defer stop()
-
-	// Give the subscriber time to register its hook.
-	time.Sleep(50 * time.Millisecond)
 
 	// Write one matching + one non-matching event. Only the matching
 	// one should arrive on the channel.
@@ -119,33 +128,7 @@ func TestStreamingSubscribe_EndToEnd(t *testing.T) {
 func TestStreamingSubscribe_LevelFilter(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	sockPath := shortSocketPath(t)
-	t.Setenv("TREEMAN_SOCKET", sockPath)
-	ln, err := net.Listen("unix", sockPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = ln.Close() }()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "t.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = s.Close() }()
-	st := NewState(ctx, s)
-
-	go func() {
-		conn, err := ln.Accept()
-		if err != nil {
-			return
-		}
-		defer func() { _ = conn.Close() }()
-		dec := json.NewDecoder(conn)
-		var req rpc.Request
-		if err := dec.Decode(&req); err != nil {
-			return
-		}
-		DispatchStreaming(ctx, st, conn, req)
-	}()
+	s := startStreamServer(ctx, t)
 
 	stream, stop, err := rpc.SubscribeEvents(ctx, rpc.EventSubscribeArgs{
 		Levels: []string{"error"},
@@ -154,7 +137,6 @@ func TestStreamingSubscribe_LevelFilter(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer stop()
-	time.Sleep(50 * time.Millisecond)
 
 	_ = s.WriteEvent(ctx, store.LevelInfo, "noise", "info-level", 0, 0, "", 0, nil)
 	_ = s.WriteEvent(ctx, store.LevelError, "boom", "error-level", 0, 0, "", 0, nil)
@@ -171,5 +153,67 @@ func TestStreamingSubscribe_LevelFilter(t *testing.T) {
 	case ev := <-stream:
 		t.Errorf("unexpected extra event: %+v", ev)
 	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+// TestStreamingSubscribe_NoRegistrationRace pins #117: an event written
+// the instant SubscribeEvents returns must be delivered. Before the
+// KindSubscribed handshake the client returned before the daemon had
+// registered its hook, so a plan that failed in milliseconds (a config
+// parse error) emitted its terminal plan:error into the void and
+// `worktree create --foreground` waited forever.
+func TestStreamingSubscribe_NoRegistrationRace(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	s := startStreamServer(ctx, t)
+
+	for i := range 50 {
+		id := runid.New()
+		msg := fmt.Sprintf("run-%d", i)
+		stream, stop, err := rpc.SubscribeEvents(ctx, rpc.EventSubscribeArgs{RunID: id})
+		if err != nil {
+			t.Fatalf("SubscribeEvents #%d: %v", i, err)
+		}
+		_ = s.WriteEvent(runid.With(ctx, id), store.LevelError, store.EvtPlanError, msg, 0, 0, "", 0, nil)
+		select {
+		case ev := <-stream:
+			if ev.Message != msg {
+				t.Fatalf("#%d: got %q, want %q", i, ev.Message, msg)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("#%d: event written right after subscribe was never delivered", i)
+		}
+		stop()
+	}
+}
+
+// TestSubscribeEvents_HandshakeRequired: a peer that accepts the
+// subscription but never acknowledges it (a treemand predating the
+// handshake) fails SubscribeEvents with a restart hint instead of
+// handing back a stream that may already have missed events.
+func TestSubscribeEvents_HandshakeRequired(t *testing.T) {
+	sockPath := shortSocketPath(t)
+	t.Setenv("TREEMAN_SOCKET", sockPath)
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		var req rpc.Request
+		_ = json.NewDecoder(conn).Decode(&req)
+		<-t.Context().Done() // hold the stream open, never ack
+	}()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
+	defer cancel()
+	_, _, err = rpc.SubscribeEvents(ctx, rpc.EventSubscribeArgs{})
+	if err == nil || !strings.Contains(err.Error(), "did not acknowledge") {
+		t.Fatalf("SubscribeEvents against a non-acking peer = %v, want the acknowledge error", err)
 	}
 }

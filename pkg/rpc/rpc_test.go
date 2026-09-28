@@ -249,3 +249,23 @@ func TestEnvelopeV2Keys(t *testing.T) {
 		t.Errorf("v2 envelope decode drifted: %+v", back)
 	}
 }
+
+// TestWorktreeCreateArgsRoundTrip: the create task's param encoding and
+// decoding are inverses, and unset fields stay off the wire.
+func TestWorktreeCreateArgsRoundTrip(t *testing.T) {
+	for _, in := range []WorktreeCreateArgs{
+		{Branch: "feature/x"},
+		{Branch: "feature/x", From: "origin/develop", Path: "/w/x", NoFetch: true, SkipHooks: true, SkipPrepare: true},
+	} {
+		task := in.Task("/repo", map[string]string{"PATH": "/bin"})
+		if task.Type != TaskWorktreeCreate || task.RepoPath != "/repo" || task.InheritedEnv["PATH"] != "/bin" {
+			t.Errorf("Task routing fields = %+v", task)
+		}
+		if got := WorktreeCreateArgsOf(task); got != in {
+			t.Errorf("round trip = %+v, want %+v", got, in)
+		}
+	}
+	if p := (WorktreeCreateArgs{Branch: "b"}).Task("/r", nil).Params; len(p) != 1 {
+		t.Errorf("unset fields leaked onto the wire: %v", p)
+	}
+}

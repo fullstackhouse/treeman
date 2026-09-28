@@ -150,22 +150,9 @@ func worktreeActionPicker(ctx context.Context, c *cli.Command, repoRoot string) 
 		if werr != nil || name == "" {
 			return werr
 		}
-		task := rpc.Task{
-			Type:         rpc.TaskWorktreeCreate,
-			RepoPath:     repoRoot,
-			Params:       map[string]string{rpc.ParamBranch: name},
-			InheritedEnv: CaptureInheritedEnv(),
-		}
-		if base != "" {
-			task.Params[rpc.ParamFrom] = base
-		}
-		payload, perr := resultPayload(ctx, task)
-		if perr != nil {
-			return perr
-		}
-		var cres wt.CreateResult
-		if jerr := json.Unmarshal(payload, &cres); jerr != nil {
-			return jerr
+		cres, cerr := createWorktree(ctx, rpc.WorktreeCreateArgs{Branch: name, From: base}.Task(repoRoot, CaptureInheritedEnv()))
+		if cerr != nil {
+			return cerr
 		}
 		printCreateResult(cres)
 		return nil
@@ -252,47 +239,42 @@ func liveWorktreePaths(ctx context.Context, repoRoot string) []string {
 	return paths
 }
 
-// wtSwitch — `treeman worktree switch [branch]`, the legacy zsh `gwt`
-// spelling, consolidated into `go --checkout` (#91). Same flag set and
-// ShellComplete as `go` (built from it), the same checkout policy, and
-// the same stdout contract (bare destination path for the cd shim).
-// Hidden so `worktree --help` shows one navigation entry. The one
-// intentional difference: a bare `switch` opens the interactive picker
-// instead of erroring like a bare `go`, preserving the old TTY flow.
-// With a branch, unknown bare names still route through the branch
-// wizard instead of creating a literally-named typo branch.
+// wtSwitch — `treeman worktree switch [branch]` (the zsh `gwt`). Lands
+// the branch in a worktree — its existing one, else a freshly created
+// linked worktree — and NEVER checks out in the main checkout; that
+// in-place policy belongs to `git switch` / `go --checkout` (gcb). Same
+// UX as `git switch` (arg | picker | wizard, shared flag set), different
+// landing policy (worktreeRoute). Prints the destination path on stdout
+// for the shell shim: `cd "$(treeman worktree switch …)"`.
 func wtSwitch() *cli.Command {
-	cmd := wtGo()
-	cmd.Name = "switch"
-	cmd.Hidden = true
-	cmd.Usage = "legacy spelling of `go --checkout` (checkout policy; prints dest path for cd)"
-	cmd.Action = func(ctx context.Context, c *cli.Command) error {
-		if c.NArg() < 1 {
-			repoRoot, err := resolveRepo(c.String("repo"))
-			if err != nil {
-				return err
-			}
-			return switchInteractive(ctx, repoRoot, c.String("from"), c.Bool("no-fetch"), checkoutRoute)
-		}
-		// Re-enter `go` with --checkout forced on so the two spellings
-		// share one code path end to end.
-		argv := []string{"go", "--checkout"}
-		argv = append(argv, c.Args().Slice()...)
-		if c.Bool("create") {
-			argv = append(argv, "--create")
-		}
-		if c.Bool("no-fetch") {
-			argv = append(argv, "--no-fetch")
-		}
-		if v := c.String("from"); v != "" {
-			argv = append(argv, "--from", v)
-		}
-		if v := c.String("repo"); v != "" {
-			argv = append(argv, "--repo", v)
-		}
-		return wtGo().Run(ctx, argv)
+	return &cli.Command{
+		Name:          "switch",
+		Usage:         "switch to or create a branch's worktree — never checks out in the main repo (prints dest path for cd)",
+		ArgsUsage:     "[branch]",
+		Flags:         switchFlags(),
+		ShellComplete: branchArgComplete,
+		Action: func(ctx context.Context, c *cli.Command) error {
+			return runSwitch(ctx, c, worktreeRoute)
+		},
 	}
-	return cmd
+}
+
+// createWorktree runs a create task to completion and decodes its
+// result — the one source of the created worktree's path, so no caller
+// has to re-derive it from the branch name.
+func createWorktree(ctx context.Context, task rpc.Task) (wt.CreateResult, error) {
+	var res wt.CreateResult
+	payload, err := resultPayload(ctx, task)
+	if err != nil {
+		return res, err
+	}
+	if payload == nil {
+		return res, errors.New("worktree create: daemon returned no result")
+	}
+	if err := json.Unmarshal(payload, &res); err != nil {
+		return res, fmt.Errorf("worktree create: decode result: %w", err)
+	}
+	return res, nil
 }
 
 func wtCreate() *cli.Command {
@@ -359,28 +341,15 @@ Examples:
 			if err != nil {
 				return err
 			}
-			task := rpc.Task{
-				Type:         rpc.TaskWorktreeCreate,
-				RepoPath:     repoRoot,
-				Params:       map[string]string{rpc.ParamBranch: branch},
-				InheritedEnv: CaptureInheritedEnv(),
+			createArgs := rpc.WorktreeCreateArgs{
+				Branch:      branch,
+				From:        c.String("from"),
+				Path:        c.String("path"),
+				NoFetch:     c.Bool("no-fetch"),
+				SkipHooks:   c.Bool("skip-hooks"),
+				SkipPrepare: c.Bool("skip-prepare"),
 			}
-			if v := c.String("from"); v != "" {
-				task.Params[rpc.ParamFrom] = v
-			}
-			if v := c.String("path"); v != "" {
-				task.Params[rpc.ParamPath] = v
-			}
-			if c.Bool("no-fetch") {
-				task.Params[rpc.ParamNoFetch] = "1"
-			}
-			if c.Bool("skip-hooks") {
-				task.Params[rpc.ParamSkipHooks] = "1"
-			}
-			if c.Bool("skip-prepare") {
-				task.Params[rpc.ParamSkipPrepare] = "1"
-			}
-			payload, err := resultPayload(ctx, task)
+			task := createArgs.Task(repoRoot, CaptureInheritedEnv())
 			if c.Bool("foreground") {
 				// Stream the run's events (subscribe before dispatch,
 				// daemon-less in-process fallback) — plain step lines,
@@ -390,8 +359,8 @@ Examples:
 				}
 				path, lok := wt.LookupWorktree(ctx, repoRoot, branch, cliSink{})
 				if !lok {
-					if task.Params[rpc.ParamPath] != "" {
-						path = task.Params[rpc.ParamPath]
+					if createArgs.Path != "" {
+						path = createArgs.Path
 					} else {
 						return errors.New("create finished but the worktree row is not visible yet — check `worktree list`")
 					}
@@ -402,11 +371,8 @@ Examples:
 				}
 				return nil
 			}
+			res, err := createWorktree(ctx, task)
 			if err != nil {
-				return err
-			}
-			var res wt.CreateResult
-			if err := json.Unmarshal(payload, &res); err != nil {
 				return err
 			}
 			printCreateResult(res)
@@ -1665,8 +1631,9 @@ func wtPrev() *cli.Command {
 	}
 }
 
-// wtGo — `treeman worktree go <name-or-branch>`. The single navigation verb;
-// absorbs the former `wt switch` and `wt resolve`.
+// wtGo — `treeman worktree go <name-or-branch>`. The navigation verb
+// (absorbs the former `wt resolve`); `worktree switch` is the separate
+// always-a-worktree landing policy.
 //
 // Default (pure resolve, no git side effects): fuzzy-match an existing
 // worktree (slug/branch/basename), then exact-branch registry lookup,
@@ -1692,8 +1659,9 @@ func wtGo() *cli.Command {
 		Usage:     "resolve/create/checkout a worktree by name or branch (use as cd \"$(treeman worktree go …)\")",
 		ArgsUsage: "<name-or-branch>",
 		Description: `The navigation primitive: pure path resolution by default, --create to
-spawn the worktree, --checkout for full branch routing (the policy the
-legacy 'switch' spelling shares).`,
+spawn the worktree, --checkout for full branch routing (the ` + "`git switch`" + ` policy,
+which may check out in the main repo). To always land in a worktree, use
+` + "`worktree switch`" + `.`,
 		ShellComplete: worktreeArgComplete,
 		Flags: []cli.Flag{
 			&cli.BoolFlag{Name: "create", Usage: "create the worktree if nothing matches"},
@@ -1757,23 +1725,7 @@ legacy 'switch' spelling shares).`,
 			}
 
 			// --create → spawn the worktree, then print its path.
-			createCmd := wtCreate()
-			argv := []string{"create", target}
-			if v := c.String("from"); v != "" {
-				argv = append(argv, "--from", v)
-			}
-			argv = append(argv, "--repo", repoRoot)
-			// Silence create's status lines on stdout — wt go reserves
-			// stdout for the resolved path (cd "$(treeman worktree go …)").
-			prevOut := ui.Out
-			ui.Out = os.Stderr
-			err = createCmd.Run(ctx, argv)
-			ui.Out = prevOut
-			if err != nil {
-				return err
-			}
-			fmt.Println(filepath.Join(wt.WorktreesRoot(cfg, repoRoot), target))
-			return nil
+			return goSpawnWorktree(ctx, repoRoot, target, c.String("from"), c.Bool("no-fetch"))
 		},
 	}
 }
@@ -1870,33 +1822,23 @@ func resolveGoMode(ctx context.Context, repoRoot, branch, from string, create, n
 // goSpawnWorktree creates a fresh worktree for <branch> and prints its
 // resolved path on stdout (create status/ports stream to stderr).
 func goSpawnWorktree(ctx context.Context, repoRoot, branch, from string, noFetch bool) error {
-	argv := []string{"create", branch, "--repo", repoRoot}
-	if from != "" {
-		argv = append(argv, "--from", from)
-	}
-	if noFetch {
-		argv = append(argv, "--no-fetch")
-	}
-	// Silence create's status lines on stdout — wt go reserves stdout
-	// for the resolved path (cd "$(treeman worktree go …)").
+	// Create's status lines go to stderr — stdout is reserved for the
+	// destination path (cd "$(treeman worktree go …)").
 	prevOut := ui.Out
 	ui.Out = os.Stderr
-	err := wtCreate().Run(ctx, argv)
+	res, err := createWorktree(
+		ctx,
+		rpc.WorktreeCreateArgs{Branch: branch, From: from, NoFetch: noFetch}.Task(repoRoot, CaptureInheritedEnv()),
+	)
+	if err == nil {
+		printCreateResult(res)
+	}
 	ui.Out = prevOut
 	if err != nil {
 		return err
 	}
-	// Resolve final path from registry (wt create writes the
-	// row before returning).
-	if path, ok := registryWorktreeForBranch(ctx, repoRoot, branch); ok {
-		touchVisitedByPath(ctx, path)
-		fmt.Println(path)
-		return nil
-	}
-	// Fall back to the default location (matches wt create's path math).
-	cfg, _ := resolve.LoadResolved(repoRoot)
-	path := filepath.Join(wt.WorktreesRoot(cfg, repoRoot), branch)
-	fmt.Println(path)
+	touchVisitedByPath(ctx, res.WtPath)
+	fmt.Println(res.WtPath)
 	return nil
 }
 

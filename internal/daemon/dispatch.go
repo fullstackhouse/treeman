@@ -235,7 +235,9 @@ func DispatchStreaming(ctx context.Context, st *State, conn net.Conn, req rpc.Re
 }
 
 // streamEvents registers a hook on st.Store that filters events
-// against args and writes matching ones to conn as KindEvent responses.
+// against args, acknowledges the live subscription with one
+// KindSubscribed frame, and writes matching events to conn as KindEvent
+// responses.
 // Blocks until ctx cancels, the client closes, or a write fails.
 // Filter semantics: every non-empty field is AND-combined; empty
 // fields match everything (matches logs_query exactly).
@@ -278,6 +280,16 @@ func streamEvents(ctx context.Context, st *State, conn net.Conn, req rpc.Request
 		}
 	})
 	defer st.Store.UnregisterEventHook(hookID)
+
+	// Handshake: the hook is live, so tell the client. SubscribeEvents
+	// blocks on this frame — a caller that dispatches work right after
+	// subscribing can never race the registration above and miss the
+	// run's terminal event.
+	ack := rpc.Response{Kind: rpc.KindSubscribed}
+	stampIdentity(&ack)
+	if err := json.NewEncoder(conn).Encode(&ack); err != nil {
+		return
+	}
 
 	// One reusable frame buffer per subscription: batches encode into
 	// it and land on the conn in a single write. json.Encoder reuses

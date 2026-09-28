@@ -127,19 +127,35 @@ func dispatchTask(ctx context.Context, task rpc.Task, foreground bool, label str
 
 // foregroundTask streams the daemon's live events to completion, or — when
 // no daemon is reachable — runs the plan in-process and reports the outcome.
+// The subscription is acknowledged before dispatch (rpc.SubscribeEvents
+// returns only once the daemon's filter is live), so even a plan that
+// fails instantly delivers its terminal event. Only an unreachable
+// daemon falls back in-process; any other subscribe or dispatch failure
+// is surfaced, since the daemon may be running the plan and a second,
+// in-process run would race its writer.
 func foregroundTask(ctx context.Context, task rpc.Task, label string) error {
 	runID := runid.New()
 	ch, cancel, err := subscribeRun(ctx, runID)
 	if err != nil {
+		if !errors.Is(err, rpc.ErrDaemonUnreachable) {
+			return fmt.Errorf("%s: %w", label, err)
+		}
 		return reportInlineResult(submitPlan(ctx, rpc.Plan(true, rpc.One(task))), label)
 	}
 	defer cancel()
 	req := rpc.Plan(false, rpc.One(task))
 	req.RunPlan.RunID = runID
-	if resp, callErr := rpc.Call(ctx, req); callErr != nil || resp.Kind != rpc.KindPlanQueued {
-		return reportInlineResult(submitPlan(ctx, rpc.Plan(true, rpc.One(task))), label)
+	resp := submitPlan(ctx, req)
+	switch resp.Kind {
+	case rpc.KindPlanQueued:
+		return streamPlanEvents(ch, label)
+	case rpc.KindPlanResult:
+		// The daemon went away between subscribe and dispatch;
+		// submitPlan ran the plan in-process to completion.
+		return reportInlineResult(resp, label)
+	default:
+		return fmt.Errorf("%s: %s", label, resp.Message)
 	}
-	return streamPlanEvents(ch, label)
 }
 
 // reportInlineResult prints the outcome of an in-process plan run and
@@ -278,16 +294,19 @@ func submitPlan(ctx context.Context, req rpc.Request) rpc.Response {
 }
 
 // subscribeRun opens a run-id-scoped event subscription, starting the
-// daemon first if it isn't reachable.
+// daemon first if it isn't reachable. A daemon that is reachable but
+// fails the subscription is reported as-is — restarting it here would
+// hide the fault.
 func subscribeRun(ctx context.Context, runID string) (<-chan rpc.EventEnvelope, func(), error) {
-	ch, cancel, err := rpc.SubscribeEvents(ctx, rpc.EventSubscribeArgs{RunID: runID})
-	if err != nil {
-		if startErr := wt2.EnsureDaemon(ctx); startErr != nil {
-			return nil, nil, err
-		}
-		ch, cancel, err = rpc.SubscribeEvents(ctx, rpc.EventSubscribeArgs{RunID: runID})
+	args := rpc.EventSubscribeArgs{RunID: runID}
+	ch, cancel, err := rpc.SubscribeEvents(ctx, args)
+	if err == nil || !errors.Is(err, rpc.ErrDaemonUnreachable) {
+		return ch, cancel, err
 	}
-	return ch, cancel, err
+	if startErr := wt2.EnsureDaemon(ctx); startErr != nil {
+		return nil, nil, err
+	}
+	return rpc.SubscribeEvents(ctx, args)
 }
 
 // streamPlanEvents prints the live event tail for a foreground plan and

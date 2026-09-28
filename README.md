@@ -326,7 +326,7 @@ Worktree navigation pairs with a 2-line shell shim, since a child
 process can't `cd` its parent shell:
 
 ```sh
-gwt() { local p; p=$(treeman worktree go --checkout "$@") && [ -n "$p" ] && cd "$p"; }
+gwt() { local p; p=$(treeman worktree switch "$@") && [ -n "$p" ] && cd "$p"; }
 gcb() { local p; p=$(treeman git switch      "$@") && [ -n "$p" ] && cd "$p"; }
 ```
 

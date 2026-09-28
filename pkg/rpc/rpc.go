@@ -331,6 +331,61 @@ func Plan(wait bool, groups ...[]Task) Request {
 	return Request{Method: MethodRunPlan, RunPlan: &RunPlanArgs{Groups: groups, Wait: wait}}
 }
 
+// WorktreeCreateArgs is the typed form of a TaskWorktreeCreate's
+// Params. Task encodes it and WorktreeCreateArgsOf decodes it, so every
+// producer (CLI, MCP) and the daemon consumer share one mapping onto the
+// string-keyed wire params instead of each spelling it out.
+type WorktreeCreateArgs struct {
+	Branch      string
+	From        string // base branch; empty = repo default
+	Path        string // explicit worktree path; empty = derived
+	NoFetch     bool
+	SkipHooks   bool
+	SkipPrepare bool
+}
+
+// Task builds the TaskWorktreeCreate for a in repoPath, carrying the
+// caller's inherited env.
+func (a WorktreeCreateArgs) Task(repoPath string, inheritedEnv map[string]string) Task {
+	params := map[string]string{ParamBranch: a.Branch}
+	setParam(params, ParamFrom, a.From)
+	setParam(params, ParamPath, a.Path)
+	setFlagParam(params, ParamNoFetch, a.NoFetch)
+	setFlagParam(params, ParamSkipHooks, a.SkipHooks)
+	setFlagParam(params, ParamSkipPrepare, a.SkipPrepare)
+	return Task{Type: TaskWorktreeCreate, RepoPath: repoPath, Params: params, InheritedEnv: inheritedEnv}
+}
+
+// WorktreeCreateArgsOf decodes a TaskWorktreeCreate's Params.
+func WorktreeCreateArgsOf(t Task) WorktreeCreateArgs {
+	return WorktreeCreateArgs{
+		Branch:      t.Params[ParamBranch],
+		From:        t.Params[ParamFrom],
+		Path:        t.Params[ParamPath],
+		NoFetch:     FlagParam(t, ParamNoFetch),
+		SkipHooks:   FlagParam(t, ParamSkipHooks),
+		SkipPrepare: FlagParam(t, ParamSkipPrepare),
+	}
+}
+
+// FlagParam reports whether boolean param key is set on t (encoded "1").
+func FlagParam(t Task, key string) bool { return t.Params[key] == "1" }
+
+// setParam stores a string param, omitting the empty value.
+func setParam(params map[string]string, key, val string) {
+	if val != "" {
+		params[key] = val
+	}
+}
+
+// setFlagParam stores a boolean param in its "1" wire encoding,
+// omitting false.
+func setFlagParam(params map[string]string, key string, on bool) {
+	if on {
+		params[key] = "1"
+	}
+}
+
 // RunPlanArgs — submit a plan to the daemon. Groups run in parallel; the
 // tasks inside a group run sequentially (one ordered lane, stopping at
 // its first failure). RunID, when set, becomes the executor's run-id so
@@ -371,10 +426,15 @@ const (
 	KindSyncResult     = "sync_result"
 	KindSyncStatus     = "sync_status"
 	KindDaemonState    = "daemon_state"
+	// KindSubscribed is the first frame of a MethodEventSubscribe
+	// stream: the daemon sends it once the subscription's filter is
+	// live, so every event written after the client reads it is
+	// delivered. Stamped with ProtocolVersion/DaemonVersion.
+	KindSubscribed = "subscribed"
 	// KindEvent is the per-event envelope emitted on a streaming
-	// MethodEventSubscribe response. One emitted per matching event;
-	// the subscription has no terminal "done" envelope — it ends when
-	// the connection closes.
+	// MethodEventSubscribe response. One emitted per matching event
+	// after the KindSubscribed frame; the subscription has no terminal
+	// "done" envelope — it ends when the connection closes.
 	KindEvent = "event"
 	KindError = "error"
 )
@@ -453,18 +513,22 @@ type WatcherSummary struct {
 
 // ─────────────────────────── client ───────────────────────────
 
-// SubscribeEvents opens a streaming event subscription. Returns an
-// already-running goroutine that feeds matching events down the
-// returned channel until ctx cancels, the daemon disconnects, or the
-// caller calls cancel. The channel is closed when the subscription
-// ends.
+// SubscribeEvents opens a streaming event subscription. It returns
+// only once the daemon has acknowledged that the subscription is live
+// (the KindSubscribed frame), so an event written after SubscribeEvents
+// returns is never missed — callers may dispatch work and then wait
+// for its events without racing the daemon's hook registration. The
+// returned channel is fed by an already-running goroutine until ctx
+// cancels, the daemon disconnects, or the caller calls cancel, and is
+// closed when the subscription ends.
 //
-// Unlike Call, this dials with NO deadline on the connection — the
-// subscription is intentionally long-lived. ctx-cancel is the only
-// supported shutdown.
+// Unlike Call, the stream itself runs with NO deadline — the
+// subscription is intentionally long-lived and ctx-cancel is the only
+// supported shutdown. Only the handshake is bounded (subscribeAckTimeout).
 //
-// Returns (nil, nil, err) on dial / initial-handshake failure so
-// callers can fall back to a polling path.
+// Returns (nil, nil, err) on dial or handshake failure. A dial failure
+// wraps ErrDaemonUnreachable, exactly like Call, so callers can tell
+// "no daemon" (fall back) from "daemon misbehaved" (surface it).
 func SubscribeEvents(ctx context.Context, args EventSubscribeArgs) (<-chan EventEnvelope, func(), error) {
 	path, err := SocketPath()
 	if err != nil {
@@ -473,12 +537,19 @@ func SubscribeEvents(ctx context.Context, args EventSubscribeArgs) (<-chan Event
 	d := net.Dialer{Timeout: 1500 * time.Millisecond}
 	conn, err := d.DialContext(ctx, "unix", path)
 	if err != nil {
-		return nil, nil, fmt.Errorf("dial %s: %w", path, err)
+		return nil, nil, fmt.Errorf("dial %s — is treemand running? %w: %w", path, ErrDaemonUnreachable, err)
 	}
 	req := Request{Method: MethodEventSubscribe, EventSubscribe: &args}
 	if err := json.NewEncoder(conn).Encode(&req); err != nil {
 		_ = conn.Close()
 		return nil, nil, fmt.Errorf("encode subscribe: %w", err)
+	}
+	// One decoder for the whole stream: it buffers past the handshake
+	// frame, so a second decoder would lose the events behind it.
+	dec := json.NewDecoder(conn)
+	if err := awaitSubscribed(ctx, conn, dec); err != nil {
+		_ = conn.Close()
+		return nil, nil, err
 	}
 
 	out := make(chan EventEnvelope, 64)
@@ -500,7 +571,6 @@ func SubscribeEvents(ctx context.Context, args EventSubscribeArgs) (<-chan Event
 	safego.Go("rpc:subscribe:read", "", func() {
 		defer close(out)
 		defer cancel()
-		dec := json.NewDecoder(conn)
 		for {
 			var resp Response
 			if err := dec.Decode(&resp); err != nil {
@@ -520,6 +590,46 @@ func SubscribeEvents(ctx context.Context, args EventSubscribeArgs) (<-chan Event
 	})
 
 	return out, stop, nil
+}
+
+// subscribeAckTimeout bounds the wait for the KindSubscribed frame. The
+// daemon sends it right after registering the subscription (one local
+// ID lookup), so the bound only ever trips on a daemon that predates
+// the handshake or is wedged.
+const subscribeAckTimeout = 5 * time.Second
+
+// awaitSubscribed reads the handshake frame of an event subscription:
+// KindSubscribed (protocol-checked) means the filter is live; an error
+// frame, EOF, or no frame within subscribeAckTimeout (or ctx's earlier
+// deadline) fails the subscription instead of leaving the caller
+// waiting on events the daemon never registered for.
+func awaitSubscribed(ctx context.Context, conn net.Conn, dec *json.Decoder) error {
+	deadline := time.Now().Add(subscribeAckTimeout)
+	if dl, ok := ctx.Deadline(); ok && dl.Before(deadline) {
+		deadline = dl
+	}
+	_ = conn.SetReadDeadline(deadline)
+	var resp Response
+	if err := dec.Decode(&resp); err != nil {
+		var nerr net.Error
+		if errors.As(err, &nerr) && nerr.Timeout() {
+			return errors.New(
+				"event subscribe: daemon did not acknowledge the subscription — treemand is older than this CLI or wedged; restart it (`treeman daemon stop`, then `treeman daemon start`)",
+			)
+		}
+		return fmt.Errorf("event subscribe: read handshake: %w", err)
+	}
+	if err := checkProtocol(resp); err != nil {
+		return err
+	}
+	switch resp.Kind {
+	case KindSubscribed:
+		return conn.SetReadDeadline(time.Time{})
+	case KindError:
+		return fmt.Errorf("event subscribe: %s", resp.Message)
+	default:
+		return fmt.Errorf("event subscribe: unexpected handshake frame %q", resp.Kind)
+	}
 }
 
 // Call dials the daemon, sends one Request, reads one Response,

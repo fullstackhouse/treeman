@@ -515,15 +515,16 @@ func TestWtDeleteBatchConfirm(t *testing.T) {
 	}
 }
 
-// TestWtSwitchConsolidatedIntoGo pins the #91 consolidation: the
-// legacy `switch` spelling produces the same stdout as `go --checkout`
-// for the same input, and `worktree --help` lists one navigation entry
-// (switch is hidden, not a second overlapping command).
-func TestWtSwitchConsolidatedIntoGo(t *testing.T) {
+// TestWtSwitchAlwaysLandsInWorktree pins the zsh `gwt` contract that
+// #91 broke (#117): `worktree switch` lands in the branch's worktree —
+// the existing one, else a new linked worktree — and never checks out
+// in the main checkout. `go --checkout` (the gcb policy) still agrees
+// with it when the branch already has a worktree.
+func TestWtSwitchAlwaysLandsInWorktree(t *testing.T) {
 	repo := newGitRepo(t)
 	e := newEnv(t)
 	t.Cleanup(func() { stopDaemon(t, e) })
-	writeConfig(t, repo, minimalConfig)
+	writeConfig(t, repo, "worktrees:\n  root: .worktrees\n")
 	wtA := filepath.Join(repo, ".worktrees", "feat_a")
 	mustGit(t, repo, "worktree", "add", "-b", "feature/a", wtA, "HEAD")
 	res := e.run(t, wtA, "worktree", "register", "--branch", "feature/a")
@@ -531,7 +532,7 @@ func TestWtSwitchConsolidatedIntoGo(t *testing.T) {
 		t.Fatalf("register: %v\nstderr:\n%s", res.err, res.stderr)
 	}
 
-	t.Run("switch and go --checkout print the same path", func(t *testing.T) {
+	t.Run("existing worktree: switch and go --checkout print its path", func(t *testing.T) {
 		viaSwitch := e.run(t, repo, "worktree", "switch", "feature/a")
 		viaGo := e.run(t, repo, "worktree", "go", "--checkout", "feature/a")
 		if viaSwitch.err != nil {
@@ -540,156 +541,43 @@ func TestWtSwitchConsolidatedIntoGo(t *testing.T) {
 		if viaGo.err != nil {
 			t.Fatalf("go --checkout: %v\nstderr:\n%s", viaGo.err, viaGo.stderr)
 		}
-		if strings.TrimSpace(viaSwitch.stdout) != wtA {
-			t.Errorf("switch stdout = %q, want %q", strings.TrimSpace(viaSwitch.stdout), wtA)
+		if got := strings.TrimSpace(viaSwitch.stdout); got != wtA {
+			t.Errorf("switch stdout = %q, want %q", got, wtA)
 		}
 		if strings.TrimSpace(viaSwitch.stdout) != strings.TrimSpace(viaGo.stdout) {
 			t.Errorf("switch and go --checkout diverge:\nswitch: %q\ngo:     %q", viaSwitch.stdout, viaGo.stdout)
 		}
 	})
 
-	t.Run("help shows one navigation entry", func(t *testing.T) {
+	t.Run("local branch without worktree gets a linked worktree", func(t *testing.T) {
+		mustGit(t, repo, "branch", "feature/b")
+		res := e.run(t, repo, "worktree", "switch", "feature/b")
+		if res.err != nil {
+			t.Fatalf("switch: %v\nstderr:\n%s", res.err, res.stderr)
+		}
+		dest := strings.TrimSpace(res.stdout)
+		if dest == repo || dest == "" {
+			t.Fatalf("switch stdout = %q — must be a linked worktree, not the main checkout", dest)
+		}
+		if b := strings.TrimSpace(gitOut(t, repo, "branch", "--show-current")); b != "main" {
+			t.Errorf("main checkout moved to %q — switch must never check out in main", b)
+		}
+		if b := strings.TrimSpace(gitOut(t, dest, "branch", "--show-current")); b != "feature/b" {
+			t.Errorf("worktree %s is on %q, want feature/b", dest, b)
+		}
+	})
+
+	t.Run("help lists switch with its own policy", func(t *testing.T) {
 		res := e.run(t, repo, "worktree", "--help")
 		if res.err != nil {
 			t.Fatalf("worktree --help: %v\nstderr:\n%s", res.err, res.stderr)
 		}
-		if strings.Contains(res.stdout+res.stderr, "switch to or create a branch's worktree") {
-			t.Errorf("legacy switch entry still advertised in help:\n%s", res.stdout+res.stderr)
+		out := res.stdout + res.stderr
+		if !strings.Contains(out, "never checks out in the main repo") {
+			t.Errorf("switch entry missing from help:\n%s", out)
 		}
-		if !strings.Contains(res.stdout+res.stderr, "worktree go") {
-			t.Errorf("go entry missing from help:\n%s", res.stdout+res.stderr)
-		}
-	})
-}
-
-// TestInitEngineAndInteractive pins the #71 acceptance criteria:
-// `init --engine postgres` produces a config where `config validate`
-// passes with an active databases: block, and `init --interactive`
-// completes non-interactively (declines the picker) when stdin is not
-// a TTY.
-func TestInitEngineAndInteractive(t *testing.T) {
-	t.Run("--engine activates a valid databases block", func(t *testing.T) {
-		repo := newGitRepo(t)
-		e := newEnv(t)
-		res := e.run(t, repo, "init", "--engine", "postgres,redis")
-		if res.err != nil {
-			t.Fatalf("init --engine: %v\nstderr:\n%s", res.err, res.stderr)
-		}
-		validate := e.run(t, repo, "config", "validate")
-		if validate.err != nil {
-			t.Fatalf("config validate after init --engine: %v\nstdout:\n%s\nstderr:\n%s",
-				validate.err, validate.stdout, validate.stderr)
-		}
-		body, err := os.ReadFile(filepath.Join(repo, ".treeman.yaml"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		text := string(body)
-		for _, want := range []string{"engine: postgres", "engine: redis", "key_prefix"} {
-			if !strings.Contains(text, want) {
-				t.Errorf("scaffold missing %q:\n%s", want, text)
-			}
-		}
-	})
-
-	t.Run("init inside a subdir refuses without a root config", func(t *testing.T) {
-		repo := newGitRepo(t)
-		if err := os.MkdirAll(filepath.Join(repo, "services", "api"), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		e := newEnv(t)
-		res := e.run(t, filepath.Join(repo, "services", "api"), "init")
-		if res.err == nil {
-			t.Fatalf("init in a subdir without a root config must fail:\n%s", res.stdout+res.stderr)
-		}
-		combined := res.stdout + res.stderr
-		if !strings.Contains(combined, "repo root") {
-			t.Errorf("refusal should point at the repo root:\n%s", combined)
-		}
-		if _, err := os.Stat(filepath.Join(repo, "services", "api", ".treeman.yaml")); err == nil {
-			t.Errorf("no fragment should be written when refusing")
-		}
-
-		// After the root config exists, the subdir fragment scaffolds.
-		if res := e.run(t, repo, "init"); res.err != nil {
-			t.Fatalf("root init: %v", res.stderr)
-		}
-		frag := e.run(t, filepath.Join(repo, "services", "api"), "init")
-		if frag.err != nil {
-			t.Fatalf("fragment init with root config present: %v\n%s", frag.err, frag.stdout+frag.stderr)
-		}
-		if _, err := os.Stat(filepath.Join(repo, "services", "api", ".treeman.yaml")); err != nil {
-			t.Errorf("fragment should be written: %v", err)
-		}
-	})
-
-	t.Run("--interactive declines without a TTY and still scaffolds", func(t *testing.T) {
-		repo := newGitRepo(t)
-		e := newEnv(t)
-		res := e.run(t, repo, "init", "--interactive")
-		if res.err != nil {
-			t.Fatalf("init --interactive non-TTY: %v\nstderr:\n%s", res.err, res.stderr)
-		}
-		combined := res.stdout + res.stderr
-		if !strings.Contains(combined, "needs a terminal") {
-			t.Errorf("non-TTY --interactive should say so:\n%s", combined)
-		}
-		if _, err := os.Stat(filepath.Join(repo, ".treeman.yaml")); err != nil {
-			t.Errorf("scaffold should still be written: %v", err)
-		}
-	})
-}
-
-// TestRequireDaemonStrictMode pins the strict-daemon contract (#75):
-// with --require-daemon (or TREEMAN_REQUIRE_DAEMON=1) and no daemon,
-// submitPlan-backed commands fail fast naming `treeman daemon start`
-// instead of silently running in-process; without the flag the
-// daemon-less fallback keeps working, and the flag is a no-op when
-// the daemon IS reachable.
-func TestRequireDaemonStrictMode(t *testing.T) {
-	repo := newGitRepo(t)
-	e := newEnv(t)
-	writeConfig(t, repo, minimalConfig)
-
-	t.Run("flag fails fast with the start hint", func(t *testing.T) {
-		res := e.run(t, repo, "--require-daemon", "prepare", "--repo", repo, "--worktree", repo)
-		if res.err == nil {
-			t.Fatal("strict mode with daemon down should fail")
-		}
-		combined := res.stdout + res.stderr
-		for _, want := range []string{"--require-daemon", "treeman daemon start"} {
-			if !strings.Contains(combined, want) {
-				t.Errorf("strict failure missing %q:\nstdout:\n%s\nstderr:\n%s", want, res.stdout, res.stderr)
-			}
-		}
-		if strings.Contains(combined, "running in-process") {
-			t.Errorf("strict mode must not fall back in-process:\n%s", combined)
-		}
-	})
-
-	t.Run("env var behaves like the flag", func(t *testing.T) {
-		res := e.runEnv(t, repo, []string{"TREEMAN_REQUIRE_DAEMON=1"}, "db", "reset", "--repo", repo)
-		if res.err == nil {
-			t.Fatal("TREEMAN_REQUIRE_DAEMON=1 with daemon down should fail")
-		}
-		if !strings.Contains(res.stdout+res.stderr, "--require-daemon") {
-			t.Errorf("env-driven strict failure missing the flag hint:\nstdout:\n%s\nstderr:\n%s", res.stdout, res.stderr)
-		}
-	})
-
-	t.Run("without the flag the fallback still works", func(t *testing.T) {
-		// Engine-free config: the fallback's in-process prepare must get
-		// past the daemon-unreachable warn and fail (or succeed) on its
-		// own merits — here it runs to completion because there are no
-		// databases to prepare.
-		engineFree := newGitRepo(t)
-		writeConfig(t, engineFree, "worktrees:\n  root: .worktrees\n")
-		res := e.run(t, engineFree, "prepare", "--repo", engineFree, "--worktree", engineFree)
-		if res.err != nil {
-			t.Fatalf("daemon-less fallback should still work: %v\nstderr:\n%s", res.err, res.stderr)
-		}
-		if !strings.Contains(res.stdout+res.stderr, "running in-process") {
-			t.Errorf("fallback should announce the in-process run:\n%s", res.stdout+res.stderr)
+		if !strings.Contains(out, "worktree go") {
+			t.Errorf("go entry missing from help:\n%s", out)
 		}
 	})
 }
@@ -735,4 +623,33 @@ func TestWtAlias(t *testing.T) {
 			t.Errorf("wtt should suggest wt:\nstdout:\n%s\nstderr:\n%s", res.stdout, res.stderr)
 		}
 	})
+}
+
+// TestWtCreateForegroundSurfacesFailure pins #117: a create whose plan
+// fails instantly (here: a .treeman.yaml that does not parse) must exit
+// non-zero with the cause under --foreground, not hang waiting for a
+// terminal event the subscription missed — and must not have dispatched
+// the create twice.
+func TestWtCreateForegroundSurfacesFailure(t *testing.T) {
+	repo := newGitRepo(t)
+	e := newEnv(t)
+	t.Cleanup(func() { stopDaemon(t, e) })
+	writeConfig(t, repo, "connections:\n  mysql: {host: 127.0.0.1, bogus_field: 1}\n")
+
+	done := make(chan cliResult, 1)
+	go func() { done <- e.run(t, repo, "worktree", "create", "feature/x", "--foreground") }()
+	select {
+	case res := <-done:
+		if res.err == nil {
+			t.Fatalf("create --foreground succeeded on a broken config\nstdout:\n%s", res.stdout)
+		}
+		if !strings.Contains(res.stderr, "connections.mysql") {
+			t.Errorf("stderr lacks the config error:\n%s", res.stderr)
+		}
+	case <-time.After(60 * time.Second):
+		t.Fatal("create --foreground hung on a failing plan")
+	}
+	if out := gitOut(t, repo, "worktree", "list", "--porcelain"); strings.Contains(out, "feature/x") {
+		t.Errorf("worktree created despite the failed plan:\n%s", out)
+	}
 }

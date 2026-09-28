@@ -621,14 +621,10 @@ func gitLog() *cli.Command {
 // with no branch runs the interactive picker + wizard (see wt switch).
 func gitSwitch() *cli.Command {
 	return &cli.Command{
-		Name:      "switch",
-		Usage:     "checkout or create a branch, worktree-aware (prints dest path for cd)",
-		ArgsUsage: "[branch]",
-		Flags: []cli.Flag{
-			&cli.StringFlag{Name: "repo", Aliases: []string{"r"}},
-			&cli.StringFlag{Name: "from", Usage: "base branch when creating"},
-			&cli.BoolFlag{Name: "no-fetch", Usage: "skip the pre-checkout fetch"},
-		},
+		Name:          "switch",
+		Usage:         "checkout or create a branch, worktree-aware (prints dest path for cd)",
+		ArgsUsage:     "[branch]",
+		Flags:         switchFlags(),
 		ShellComplete: branchArgComplete,
 		Action:        switchAction,
 	}

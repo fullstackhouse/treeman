@@ -176,11 +176,11 @@ func runOneTask(ctx context.Context, st *State, task rpc.Task) (json.RawMessage,
 
 func runTaskWorktreeFinalize(ctx context.Context, st *State, task rpc.Task) (json.RawMessage, error) {
 	return nil, FinalizeWorktree(ctx, st, task.RepoPath, task.WorktreePath, task.InheritedEnv,
-		task.Params[rpc.ParamSkipPrepare] == "1")
+		rpc.FlagParam(task, rpc.ParamSkipPrepare))
 }
 
 func runTaskWorktreeTeardown(ctx context.Context, st *State, task rpc.Task) (json.RawMessage, error) {
-	return nil, TeardownWorktree(ctx, st, task.RepoPath, task.WorktreePath, task.Params[rpc.ParamForce] == "1", task.InheritedEnv)
+	return nil, TeardownWorktree(ctx, st, task.RepoPath, task.WorktreePath, rpc.FlagParam(task, rpc.ParamForce), task.InheritedEnv)
 }
 
 // taskIdentity bundles the resolved config + row identity a worktree-
@@ -532,14 +532,15 @@ func runTaskConfigWrite(ctx context.Context, st *State, task rpc.Task) (json.Raw
 // then kicks the hooks+prepare finalize tail asynchronously (under
 // BgCtx, so it outlives the result RPC) and returns the new path + ids.
 func runTaskWorktreeCreate(ctx context.Context, st *State, task rpc.Task) (json.RawMessage, error) {
+	args := rpc.WorktreeCreateArgsOf(task)
 	req := wt.CreateRequest{
 		RepoRoot:    task.RepoPath,
-		Branch:      task.Params[rpc.ParamBranch],
-		From:        task.Params[rpc.ParamFrom],
-		Path:        task.Params[rpc.ParamPath],
-		NoFetch:     task.Params[rpc.ParamNoFetch] == "1",
-		SkipHooks:   task.Params[rpc.ParamSkipHooks] == "1",
-		SkipPrepare: task.Params[rpc.ParamSkipPrepare] == "1",
+		Branch:      args.Branch,
+		From:        args.From,
+		Path:        args.Path,
+		NoFetch:     args.NoFetch,
+		SkipHooks:   args.SkipHooks,
+		SkipPrepare: args.SkipPrepare,
 		Env:         task.InheritedEnv,
 	}
 	res, needsFinalize, err := wt.CreateInStore(ctx, req, st.Store, nil)

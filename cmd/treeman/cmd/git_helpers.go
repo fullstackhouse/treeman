@@ -94,17 +94,47 @@ func validRef(ctx context.Context, repoRoot, name string) bool {
 }
 
 // switchRoute lands a chosen branch somewhere and prints the
-// destination path on stdout. One policy remains: checkoutRoute
-// (`git switch`, may check out in place — also the policy behind the
-// legacy `worktree switch` spelling since its consolidation into
-// `go --checkout`).
+// destination path on stdout. Two policies, one per switch command:
+// checkoutRoute (`git switch`, the zsh gcb — may check out in place)
+// and worktreeRoute (`worktree switch`, the zsh gwt — always a
+// worktree).
 type switchRoute func(ctx context.Context, repoRoot, branch, from string, noFetch bool) error
+
+// switchFlags is the flag set both switch commands share (runSwitch
+// reads exactly these).
+func switchFlags() []cli.Flag {
+	return []cli.Flag{
+		&cli.StringFlag{Name: "repo", Aliases: []string{"r"}},
+		&cli.StringFlag{Name: "from", Usage: "base branch when creating"},
+		&cli.BoolFlag{Name: "no-fetch", Usage: "skip the pre-checkout fetch"},
+	}
+}
 
 // checkoutRoute — the `git switch` policy (was gcb): branch live in a
 // worktree → its path; main clean → checkout in main; main dirty →
 // new worktree; else checkout in place.
 func checkoutRoute(ctx context.Context, repoRoot, branch, from string, noFetch bool) error {
 	return goCheckout(ctx, repoRoot, branch, from, true, noFetch)
+}
+
+// worktreeRoute — the `worktree switch` policy (was gwt): the branch
+// ALWAYS lands in a worktree. Existing worktree → its path; otherwise
+// create/attach one via the full wt-create flow (status + ports on
+// stderr; stdout stays the bare path for the cd shim). Never checks
+// out in the main repo — a local branch with no worktree gets a linked
+// worktree, not a `git checkout` that moves main off its branch.
+func worktreeRoute(ctx context.Context, repoRoot, branch, from string, noFetch bool) error {
+	if path, ok := liveWorktreeForBranch(ctx, repoRoot, branch); ok {
+		touchVisitedByPath(ctx, path)
+		fmt.Println(path)
+		return nil
+	}
+	// Remote-only branch: seed the worktree from its remote tip, not
+	// the repo default (create's pre-fetch resolves it to origin/<b>).
+	if from == "" && !wt.RefExistsLocal(ctx, repoRoot, branch) && wt.RefExistsRemote(ctx, repoRoot, branch) {
+		from = branch
+	}
+	return goSpawnWorktree(ctx, repoRoot, branch, from, noFetch)
 }
 
 // liveWorktreeForBranch finds the worktree holding `branch`, preferring
@@ -236,8 +266,8 @@ func resolvePath(p string) string {
 	return p
 }
 
-// switchAction is the `git switch` handler (the legacy `worktree
-// switch` delegates to the same checkout policy via `go --checkout`).
+// switchAction is the `git switch` handler; `worktree switch` runs the
+// same runSwitch UX with worktreeRoute.
 func switchAction(ctx context.Context, c *cli.Command) error {
 	return runSwitch(ctx, c, checkoutRoute)
 }

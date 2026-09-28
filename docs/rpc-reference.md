@@ -59,6 +59,7 @@ The `kind` field on every response.
 | `sync_result` | `rpc.KindSyncResult` |  |
 | `sync_status` | `rpc.KindSyncStatus` |  |
 | `daemon_state` | `rpc.KindDaemonState` |  |
+| `subscribed` | `rpc.KindSubscribed` |  |
 | `event` | `rpc.KindEvent` |  |
 | `error` | `rpc.KindError` |  |
 

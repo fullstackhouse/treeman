@@ -949,27 +949,14 @@ func worktreeCreateTool(
 	if err != nil {
 		return nil, wt.CreateResult{}, fmt.Errorf("resolve repo: %w", err)
 	}
-	task := rpc.Task{
-		Type:         rpc.TaskWorktreeCreate,
-		RepoPath:     repoRoot,
-		Params:       map[string]string{rpc.ParamBranch: in.Branch},
-		InheritedEnv: inheritedEnv(),
-	}
-	if in.From != "" {
-		task.Params[rpc.ParamFrom] = in.From
-	}
-	if in.Path != "" {
-		task.Params[rpc.ParamPath] = in.Path
-	}
-	if in.NoFetch {
-		task.Params[rpc.ParamNoFetch] = "1"
-	}
-	if in.SkipHooks {
-		task.Params[rpc.ParamSkipHooks] = "1"
-	}
-	if in.SkipPrepare {
-		task.Params[rpc.ParamSkipPrepare] = "1"
-	}
+	task := rpc.WorktreeCreateArgs{
+		Branch:      in.Branch,
+		From:        in.From,
+		Path:        in.Path,
+		NoFetch:     in.NoFetch,
+		SkipHooks:   in.SkipHooks,
+		SkipPrepare: in.SkipPrepare,
+	}.Task(repoRoot, inheritedEnv())
 	res, err := dispatchCreatePlan(ctx, task)
 	return nil, res, err
 }

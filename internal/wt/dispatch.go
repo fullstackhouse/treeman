@@ -28,7 +28,7 @@ func DispatchTeardown(ctx context.Context, repoRoot, wtPath string, force bool, 
 		InheritedEnv: env,
 	}
 	if force {
-		task.Params = map[string]string{"force": "1"}
+		task.Params = map[string]string{rpc.ParamForce: "1"}
 	}
 	return dispatchToDaemon(ctx, rpc.Plan(false, rpc.One(task)),
 		"teardown + DB teardown + git remove detached to daemon — follow with `treeman logs tail --follow`", sink)

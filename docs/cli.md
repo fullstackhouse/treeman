@@ -181,8 +181,9 @@ resolve/create/checkout a worktree by name or branch (use as cd "$(treeman workt
 
 ```
 The navigation primitive: pure path resolution by default, --create to
-spawn the worktree, --checkout for full branch routing (the policy the
-legacy 'switch' spelling shares).
+spawn the worktree, --checkout for full branch routing (the `git switch` policy,
+which may check out in the main repo). To always land in a worktree, use
+`worktree switch`.
 ```
 
 | Flag | Usage |
@@ -192,6 +193,16 @@ legacy 'switch' spelling shares).
 | `--from` | base branch (with --create/--checkout) |
 | `-r`, `--repo` |  |
 | `--no-fetch` | skip the pre-checkout `git fetch origin <base>` |
+
+### `treeman worktree switch`
+
+switch to or create a branch's worktree — never checks out in the main repo (prints dest path for cd)
+
+| Flag | Usage |
+|---|---|
+| `-r`, `--repo` |  |
+| `--from` | base branch when creating |
+| `--no-fetch` | skip the pre-checkout fetch |
 
 ### `treeman worktree prune`
 
