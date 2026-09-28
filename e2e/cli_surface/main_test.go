@@ -80,6 +80,7 @@ type env struct {
 	configDir  string
 	runtimeDir string
 	dbPath     string
+	daemonDir  string
 }
 
 func newEnv(t *testing.T) *env {
@@ -91,6 +92,11 @@ func newEnv(t *testing.T) *env {
 		configDir:  t.TempDir(),
 		runtimeDir: t.TempDir(),
 		dbPath:     filepath.Join(t.TempDir(), "treeman.db"),
+		// Commands that autostart the daemon exec `treemand` off PATH.
+		// Put this tree's build first so they never pick up whatever
+		// treemand the host has installed — or find none at all, as
+		// on CI, and fall back to the in-process paths.
+		daemonDir: sharedDaemonBinDir(t),
 	}
 	// A command like `wt delete` auto-spawns the daemon to run an async
 	// teardown; left running, it keeps writing the SQLite DB / sockets
@@ -126,6 +132,7 @@ func (e *env) block() []string {
 		"XDG_CONFIG_HOME=" + e.configDir,
 		"XDG_RUNTIME_DIR=" + e.runtimeDir,
 		"TREEMAN_DB_PATH=" + e.dbPath,
+		"PATH=" + e.daemonDir + string(os.PathListSeparator) + os.Getenv("PATH"),
 		"TREEMAN_NO_PAGER=1",
 		"NO_COLOR=1",
 	}

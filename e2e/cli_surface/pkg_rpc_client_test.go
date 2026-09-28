@@ -29,6 +29,10 @@ func TestPkgRPCClientIntegration(t *testing.T) {
 
 	cmd := exec.Command(filepath.Join(binDir, "treemand"))
 	cmd.Env = append(os.Environ(), "TREEMAN_SOCKET="+sock)
+	// rpc.Call below resolves the socket from THIS process's env, so
+	// pin it here too — otherwise it dials the default path and talks
+	// to whatever treemand the host happens to run (or nothing, on CI).
+	t.Setenv("TREEMAN_SOCKET", sock)
 	if err := cmd.Start(); err != nil {
 		t.Skipf("treemand start: %v", err)
 	}
