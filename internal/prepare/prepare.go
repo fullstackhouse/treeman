@@ -866,8 +866,11 @@ func prepareMySQL(
 	// Rollback path (opt-in): an EXISTING migration's content changed
 	// mid-sequence, so no prefix ancestor matched. If a `rollback:`
 	// command is configured, clone the diverging ancestor, unwind the
-	// changed tail, and re-migrate forward. Hard-falls-back to cold on
-	// any error.
+	// changed tail, and re-migrate forward. Candidates whose tail the
+	// branch cannot unwind (a template built from a source ahead of the
+	// branch, or a removed migration file) are rejected upstream in
+	// FindRollbackAncestor and fall through to cold. Hard-falls-back to
+	// cold on any error.
 	out, done, err = tryRollbackIncrementalBuild(ctx, cfg, d, tplCtx, worktreePath, st,
 		repoID, worktreeID, sourceDB, templateName, version, maxConns, key, inputs,
 		inheritedEnv, started, ops)
@@ -1926,9 +1929,12 @@ func tryDumpOnlyBuild(
 // ancestor template, runs the rollback command to unwind the changed
 // tail (TREEMAN_ROLLBACK_STEPS migrations), then re-runs migrate forward
 // — the only path that re-applies an edit whose ledger row is baked into
-// the dump. ANY rollback/migrate/seed error hard-falls-back to a full
-// cold build (returns (Outcome{}, false, nil); the cold build drops the
-// dirty source first).
+// the dump. Ancestors whose tail the branch has no migration files for
+// (a source ahead of the branch, a removed file) are rejected by
+// FindRollbackAncestor — unwinding them would silently no-op ("Migration
+// not found") and poison the cached template. ANY rollback/migrate/seed
+// error hard-falls-back to a full cold build (returns (Outcome{}, false,
+// nil); the cold build drops the dirty source first).
 //
 // WARNING: rollback runs the migration's CURRENT down(), not the one
 // that matched the applied schema — see the config doc on Rollback.

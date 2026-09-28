@@ -84,7 +84,7 @@ func TestFindRollbackAncestor_MultiGlobGlobalOrder(t *testing.T) {
 	}
 }
 
-func TestFindRollbackAncestor_RemovedFile(t *testing.T) {
+func TestFindRollbackAncestor_RemovedFileReturnsNil(t *testing.T) {
 	ctx := context.Background()
 	s := openRepoStore(t)
 	migs := "migrations/*.sql"
@@ -96,8 +96,10 @@ func TestFindRollbackAncestor_RemovedFile(t *testing.T) {
 	if err := s.RecordSnapshot(ctx, anc); err != nil {
 		t.Fatal(err)
 	}
-	// Current drops 002.
-	got, steps, err := s.FindRollbackAncestor(ctx, 1, "mysql", "8.0", "dh", "ch",
+	// Current drops 002: the branch has no down() for it, so a step
+	// rollback would skip it silently and leave its schema applied.
+	// The candidate must be rejected — prepare cold-rebuilds instead.
+	got, _, err := s.FindRollbackAncestor(ctx, 1, "mysql", "8.0", "dh", "ch",
 		map[string]InputVector{migs: {
 			{Path: "001.sql", Hash: "h1"},
 			{Path: "003.sql", Hash: "h3"},
@@ -105,12 +107,75 @@ func TestFindRollbackAncestor_RemovedFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got == nil {
-		t.Fatal("expected ancestor for removed-file divergence")
+	if got != nil {
+		t.Errorf("removed-file divergence must not be a rollback ancestor; got %s", got.Fingerprint)
 	}
-	// Diverges at index 1 (002 vs 003); unwind 002 + 003 = 2.
-	if steps != 2 {
-		t.Errorf("steps = %d, want 2", steps)
+}
+
+// Regression test for #118: a template built from a source AHEAD of
+// the branch (migrations from origin/develop the branch does not
+// contain) must not be selected. The old selection unwound those
+// migrations in the branch's worktree, where their files do not exist
+// — Laravel printed "Migration not found" and exited 0, the schema
+// changes stayed applied, and the poisoned result was cached as a
+// template reused by every later prepare.
+func TestFindRollbackAncestor_AheadOfBranchReturnsNil(t *testing.T) {
+	ctx := context.Background()
+	s := openRepoStore(t)
+	migs := "database/migrations/*.php"
+	anc := record("fpAhead", "ch", map[string]InputVector{migs: {
+		{Path: "2024_01_01_000001_create_users.php", Hash: "h1"},
+		{Path: "2024_01_02_000001_create_orders.php", Hash: "h2"},
+		{Path: "2026_09_21_091237_drop_render_transparent.php", Hash: "hdev1"},
+		{Path: "2026_09_22_000001_create_webdav_pending_uploads_table.php", Hash: "hdev2"},
+		{Path: "2026_09_22_125733_drop_settings_folder_templates_enabled_columns.php", Hash: "hdev3"},
+	}})
+	if err := s.RecordSnapshot(ctx, anc); err != nil {
+		t.Fatal(err)
+	}
+	// The branch forked before the develop-only migrations and carries
+	// one of its own; none of the develop tail exists on disk here.
+	got, steps, err := s.FindRollbackAncestor(ctx, 1, "mysql", "8.0", "dh", "ch",
+		map[string]InputVector{migs: {
+			{Path: "2024_01_01_000001_create_users.php", Hash: "h1"},
+			{Path: "2024_01_02_000001_create_orders.php", Hash: "h2"},
+			{Path: "2026_06_15_000000_branch_own_change.php", Hash: "hbranch"},
+		}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != nil {
+		t.Errorf("ahead-of-branch candidate must not be a rollback ancestor; got %s steps=%d", got.Fingerprint, steps)
+	}
+}
+
+// A tail that mixes an editable migration with one the branch lacks is
+// rejected wholesale: partial unwindability still leaves the unknown
+// migration's schema baked in.
+func TestFindRollbackAncestor_MixedTailReturnsNil(t *testing.T) {
+	ctx := context.Background()
+	s := openRepoStore(t)
+	migs := "migrations/*.sql"
+	anc := record("fpMixed", "ch", map[string]InputVector{migs: {
+		{Path: "001.sql", Hash: "h1"},
+		{Path: "002.sql", Hash: "hOLD"},
+		{Path: "003.sql", Hash: "h3"},
+		{Path: "004_dev_only.sql", Hash: "hdev"},
+	}})
+	if err := s.RecordSnapshot(ctx, anc); err != nil {
+		t.Fatal(err)
+	}
+	got, _, err := s.FindRollbackAncestor(ctx, 1, "mysql", "8.0", "dh", "ch",
+		map[string]InputVector{migs: {
+			{Path: "001.sql", Hash: "h1"},
+			{Path: "002.sql", Hash: "hNEW"},
+			{Path: "003.sql", Hash: "h3"},
+		}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != nil {
+		t.Errorf("partially unwindable tail must not be a rollback ancestor; got %s", got.Fingerprint)
 	}
 }
 

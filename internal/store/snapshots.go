@@ -278,7 +278,7 @@ func (s *Store) FindAncestorSnapshot(
 
 // FindRollbackAncestor finds the prior snapshot best suited to a
 // "rollback + re-migrate" rebuild after an EXISTING migration was
-// edited (or removed) mid-sequence. Unlike FindAncestorSnapshot — which
+// edited mid-sequence. Unlike FindAncestorSnapshot — which
 // requires a strict content-prefix (pure append) — this looks for a
 // candidate that DIVERGES from the current inputs: it shares the longest
 // common prefix and then differs.
@@ -293,8 +293,15 @@ func (s *Store) FindAncestorSnapshot(
 // common state before re-running `migrate` forward.
 //
 // Pure-append and exact-match candidates are skipped (those are
-// FindAncestorSnapshot's / LookupSnapshot's job). Returns (nil, 0, nil)
-// when no diverging candidate exists. The chosen candidate maximises the
+// FindAncestorSnapshot's / LookupSnapshot's job), as are candidates
+// whose diverging tail contains a migration the branch does not have
+// on disk — a template built from a source AHEAD of the branch, or
+// holding a file the branch removed. The branch has no down() for such
+// an entry, and step-based CLIs skip it silently (Laravel prints
+// "Migration not found" and exits 0), leaving its schema change applied
+// while the rebuild still gets cached as a template. Returns
+// (nil, 0, nil) when no unwindable diverging candidate exists — prepare
+// falls back to a cold build. The chosen candidate maximises the
 // common-prefix length (minimises steps).
 func (s *Store) FindRollbackAncestor(
 	ctx context.Context,
@@ -307,11 +314,15 @@ func (s *Store) FindRollbackAncestor(
 		return nil, 0, err
 	}
 	curMerged := mergeVectorsByBasename(currentInputs)
+	curNames := make(map[string]struct{}, len(curMerged))
+	for _, fh := range curMerged {
+		curNames[pathBase(fh.Path)] = struct{}{}
+	}
 	var best *SnapshotRecord
 	bestSteps := 0
 	bestPrefix := -1
 	for i := range cands {
-		r := cands[i]
+		r := &cands[i]
 		if r.LockfileHashes[CommandsHashKey] != currentCommandsHash {
 			continue
 		}
@@ -322,16 +333,31 @@ func (s *Store) FindRollbackAncestor(
 			// append or exact match, not a rollback target.
 			continue
 		}
+		if !unwindableTail(candMerged[prefix:], curNames) {
+			continue
+		}
 		steps := len(candMerged) - prefix
 		// Prefer the longest common prefix (fewest migrations to unwind).
 		if prefix > bestPrefix {
-			bestCopy := r
-			best = &bestCopy
+			best = r
 			bestPrefix = prefix
 			bestSteps = steps
 		}
 	}
 	return best, bestSteps, nil
+}
+
+// unwindableTail reports whether every migration the rollback must
+// unwind still has a file in the branch's current input set: the
+// framework's step rollback resolves each ledger entry to a migration
+// file by basename, and only a file on disk provides its down().
+func unwindableTail(tail []FileHash, currentNames map[string]struct{}) bool {
+	for i := range tail {
+		if _, ok := currentNames[pathBase(tail[i].Path)]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // candidateSnapshots runs the shared (repo, engine, version, dump)

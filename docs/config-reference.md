@@ -731,7 +731,12 @@ down()s, this can produce a wrong or failing schema. Treeman
 hard-falls-back to a full cold rebuild on ANY rollback or migrate
 error, so a broken down() degrades to "slow but correct", never
 "fast but wrong"-at-the-engine — but a down() that *succeeds* while
-not faithfully inverting up() is the user's responsibility. Leave
+not faithfully inverting up() is the user's responsibility. A prior
+template built from a source ahead of the branch (migrations the
+branch does not contain) or holding a migration file the branch
+removed is never chosen — the branch has no down() for it and
+step-based CLIs skip it silently, baking the schema change into the
+template — so those divergences always cold-rebuild. Leave
 this unset to disable the rollback path entirely (cold rebuild
 only).
 
