@@ -73,11 +73,14 @@ func spareEngineFor(ctx context.Context, cfg *config.Config, engineName string) 
 // path: clear the target, then try to claim one of the template's
 // pre-warmed spares. A claim is milliseconds (Postgres rename) or a
 // file-copy import (MySQL physical clone) versus a full logical
-// restore. Claims of the same slot resolve cleanly — Postgres rename
-// is atomic; MySQL claims each use a DIFFERENT spare, so no shared
-// export lock — and a dry pool falls back to the plain restore. The
-// same restorer serves the cache-hit source AND its fanout clones, so
-// a pool of N covers the first N restores of a worktree create.
+// restore. The restorer serves the cache-hit source AND its fanout
+// clones concurrently, so slots are handed out by one shared allocator:
+// each slot is tried by exactly one restore — no two claims contend for
+// the same spare (Postgres: the rename race; MySQL, where a claim
+// copies rather than consumes the spare: the shared export lock) — and
+// a pool of N covers at most the first N restores of a prepare. A
+// restore whose slots are exhausted or unclaimable falls back to the
+// plain restore.
 func spareClaimRestore(
 	se *spareEngine,
 	st *store.Store,
@@ -85,6 +88,7 @@ func spareClaimRestore(
 	prewarm uint32,
 	plainRestore func(ctx context.Context, template, target string) error,
 ) cloneRestorer {
+	var nextSlot atomic.Uint32
 	return func(ctx context.Context, template, target string) error {
 		if se.claimer == nil {
 			return plainRestore(ctx, template, target)
@@ -94,8 +98,8 @@ func spareClaimRestore(
 		// path — the plain restore re-attempts the drop with its own
 		// semantics.
 		if err := se.conn.DropSnapshot(ctx, target); err == nil {
-			for slot := 1; slot <= int(prewarm); slot++ {
-				spare := snapshot.SpareName(template, slot)
+			for slot := nextSlot.Add(1); slot <= prewarm; slot = nextSlot.Add(1) {
+				spare := snapshot.SpareName(template, int(slot))
 				if err := se.claimer.ClaimSpare(ctx, spare, target); err == nil {
 					_ = st.WriteEvent(ctx, store.LevelInfo, store.EvtSnapshotsPrewarmClaim,
 						fmt.Sprintf("claimed spare %s → %s", spare, target),
@@ -137,23 +141,28 @@ func restoreFor(
 	return spareClaimRestore(se, st, repoID, worktreeID, d.Prewarm, plainRestore)
 }
 
-// maybeSpawnPrewarm is the prepare paths' deferred pool top-up: fires
-// only after a successful exit that left templateName in place (cache
-// hit, incremental/rollback/dump-only, or cold build — all set
-// out.TemplateName; skip/branch-scoped outcomes don't).
+// maybeSpawnPrewarm is the deferred pool top-up, run by
+// prepareOneEngine on the Outcome a family's prepare path RETURNED —
+// cache hit (spares were claimed), incremental/rollback/dump-only and
+// cold builds (fresh template, empty pool) all return the template
+// they left in place. Deciding from the returned value rather than a
+// per-engine defer over locals keeps every family on one contract: a
+// defer in prepareMySQL once read the cache-miss locals instead of the
+// cold build's result and never topped the pool up. Skipped outcomes
+// carry no template; branch_scoped and non-capable engines are
+// rejected with prewarm by config validation.
 func maybeSpawnPrewarm(
 	cfg *config.Config,
 	st *store.Store,
 	repoID, worktreeID int64,
 	d config.DatabaseConfig,
-	fingerprint, templateName string,
 	out Outcome,
 	err error,
 ) {
-	if err != nil || d.Prewarm == 0 || out.TemplateName != templateName {
+	if err != nil || d.Prewarm == 0 || out.TemplateName == "" || out.Fingerprint == "" {
 		return
 	}
-	spawnPrewarm(cfg, st, repoID, worktreeID, d.Engine, fingerprint, templateName, d.Prewarm)
+	spawnPrewarm(cfg, st, repoID, worktreeID, d.Engine, out.Fingerprint, out.TemplateName, d.Prewarm)
 }
 
 // prewarmInFlight dedups concurrent replenishers per fingerprint —

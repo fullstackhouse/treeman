@@ -14,6 +14,7 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 
 	"github.com/stubbedev/treeman/e2e/harness"
+	"github.com/stubbedev/treeman/internal/config"
 	"github.com/stubbedev/treeman/internal/prepare"
 	"github.com/stubbedev/treeman/internal/snapshot"
 	"github.com/stubbedev/treeman/internal/store"
@@ -41,6 +42,13 @@ func TestMySQLPrewarmClaimWithoutLogicalRestore(t *testing.T) {
 	copyTree(t, "fixtures", filepath.Join(wt, "fixtures"))
 	cfg := buildConfig()
 	cfg.Databases[0].Prewarm = 2
+	// Two paratest clones → three restores per cache hit (source + 2
+	// clones) against a pool of 2: both spares are claimed and the third
+	// restore falls back to the staged clone.
+	cfg.Databases[0].TestClones = &config.TestClonesSpec{
+		Clones:       config.ClonesSetting{Fixed: 2},
+		NameTemplate: "treeman_e2e_{slug}_w{n}",
+	}
 	env := harness.NewEnv(t, wt)
 
 	// ── pass 1: cold build; the detached replenisher fills the pool ──
@@ -49,6 +57,13 @@ func TestMySQLPrewarmClaimWithoutLogicalRestore(t *testing.T) {
 	spare1 := snapshot.SpareName(o1.TemplateName, 1)
 	spare2 := snapshot.SpareName(o1.TemplateName, 2)
 	waitForMySQLSpares(t, spare1, spare2)
+
+	// ── teardown: the worktree's databases go, the template + spares
+	// stay. Without it pass 2 is the fingerprint-gated no-op cache hit
+	// (#38) — nothing to restore, so nothing to claim. ──
+	if err := prepare.TeardownDatabases(env.Ctx, cfg, env.Slug.Value, env.RepoID, env.WTID, env.Store); err != nil {
+		t.Fatalf("TeardownDatabases: %v", err)
+	}
 
 	// ── pass 2: cache hit claims spares instead of logical restores ──
 	outs = env.RunPrepare(t, cfg)

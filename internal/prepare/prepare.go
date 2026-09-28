@@ -695,6 +695,25 @@ func prepareOneEngine(
 			repoID, worktreeID, "", 0, nil)
 		return Outcome{}, nil
 	}
+	out, err := prepareFamily(ctx, fam, cfg, d, dbIdx, tplCtx, worktreePath, st, repoID, worktreeID, inheritedEnv)
+	maybeSpawnPrewarm(cfg, st, repoID, worktreeID, d, out, err)
+	return out, err
+}
+
+// prepareFamily routes one database entry to its engine family's
+// prepare path.
+func prepareFamily(
+	ctx context.Context,
+	fam engine.Family,
+	cfg *config.Config,
+	d config.DatabaseConfig,
+	dbIdx int,
+	tplCtx template.Context,
+	worktreePath string,
+	st *store.Store,
+	repoID, worktreeID int64,
+	inheritedEnv map[string]string,
+) (Outcome, error) {
 	switch fam {
 	case engine.FamilyMySQL:
 		return prepareMySQL(ctx, cfg, d, dbIdx, tplCtx, worktreePath, st, repoID, worktreeID, inheritedEnv)
@@ -812,12 +831,6 @@ func prepareMySQL(
 	if done || err != nil {
 		return out, err
 	}
-
-	// Top the spare pool back up after ANY successful exit that leaves
-	// this template in place — same contract as the postgres path.
-	defer func() {
-		maybeSpawnPrewarm(cfg, st, repoID, worktreeID, d, key.Fingerprint(), templateName, out, err)
-	}()
 
 	// Per-input vectors used for ancestor lookup AND persisted into
 	// the new snapshot row so future preps can build incrementally
@@ -2108,14 +2121,6 @@ func preparePostgres(
 	// See prepareMySQL's pin comment — same race, same fix.
 	unpinTemplate := snapshot.Pin(key.Fingerprint())
 	defer unpinTemplate()
-
-	// Top the spare pool back up after ANY successful exit that leaves
-	// this template in place — cache hit (spares were claimed),
-	// incremental/rollback/dump-only and cold builds (fresh template,
-	// empty pool). Detached: the user-visible prepare never waits on it.
-	defer func() {
-		maybeSpawnPrewarm(cfg, st, repoID, worktreeID, d, key.Fingerprint(), templateName, out, err)
-	}()
 
 	_ = st.WriteEvent(ctx, store.LevelInfo, store.EvtPrepareStart,
 		fmt.Sprintf("engine=postgres source=%s template=%s", sourceDB, templateName),
