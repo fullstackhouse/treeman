@@ -18,22 +18,22 @@ import (
 	"github.com/stubbedev/treeman/internal/engine"
 )
 
-// connFieldNames lists the yaml keys of T (before any comma) via its
-// struct tags — the structural test that tells a single connection
+// connFieldNames lists the yaml keys a single connection block of type
+// T accepts — the structural test that tells a single connection
 // mapping apart from a named-blocks mapping without trying to decode
-// either. A family key whose mapping contains ANY key outside this
-// set is a named-blocks mapping; using the same reflectivity the
-// schema and docs are generated from keeps the two in lockstep.
-func connFieldNames[T any]() map[string]bool {
-	t := reflect.TypeFor[T]()
-	out := make(map[string]bool, t.NumField())
-	for f := range t.Fields() {
-		name, _, _ := strings.Cut(f.Tag.Get("yaml"), ",")
-		if name != "" && name != "-" {
-			out[name] = true
-		}
+// either. A family key whose mapping contains ANY key outside this set
+// is a named-blocks mapping. The set comes from yamlKeys, which mirrors
+// the decoder's field rules (inline ContainerRef keys included), so it
+// is exactly what T.UnmarshalYAML accepts. openEnded reports that T
+// takes arbitrary keys (an inline catch-all), making every mapping a
+// single block.
+func connFieldNames[T any]() (fields map[string]bool, openEnded bool) {
+	keys, openEnded := yamlKeys(reflect.TypeFor[T]())
+	fields = make(map[string]bool, len(keys))
+	for _, k := range keys {
+		fields[k.Name] = true
 	}
-	return out
+	return fields, openEnded
 }
 
 // decodeConnUnion fills `single` and/or `named` from one family key's
@@ -58,7 +58,10 @@ func isSingleConnNode[T any](node *yaml.Node) bool {
 	if node.Kind != yaml.MappingNode {
 		return true
 	}
-	fields := connFieldNames[T]()
+	fields, openEnded := connFieldNames[T]()
+	if openEnded {
+		return true
+	}
 	for i := 0; i+1 < len(node.Content); i += 2 {
 		if !fields[node.Content[i].Value] {
 			return false

@@ -2489,18 +2489,14 @@ func GlobalConfigPath() (string, bool) { return globalConfigPath() }
 // schema generator to emit global- vs repo-scoped variants and by
 // `config init` to decide which keys to scaffold.
 func FieldScopes() map[string]string {
-	t := reflect.TypeFor[Config]()
-	out := make(map[string]string, t.NumField())
-	for f := range t.Fields() {
-		name, _, _ := strings.Cut(f.Tag.Get("yaml"), ",")
-		if name == "" || name == "-" {
-			continue
-		}
-		scope := f.Tag.Get("scope")
+	keys, _ := yamlKeys(reflect.TypeFor[Config]())
+	out := make(map[string]string, len(keys))
+	for _, k := range keys {
+		scope := k.Field.Tag.Get("scope")
 		if scope == "" {
 			scope = "both"
 		}
-		out[name] = scope
+		out[k.Name] = scope
 	}
 	return out
 }
