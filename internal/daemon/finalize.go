@@ -84,7 +84,11 @@ func recordFinalizeFailure(ctx context.Context, st *State, cfg *config.Config, f
 	// Best-effort: drops surface as their own `worktree:recover:*`
 	// events and never mask the failure event written below.
 	if f.enginesTouched {
-		prepare.RecoverStaleWorktree(termCtx, cfg, f.slugVal, f.wtRoot, f.repoID, f.wtID, st.Store)
+		// When the error names which databases failed, recover only
+		// those — the rest finished preparing and are healthy (#119).
+		// Otherwise (a post-engine hook failed, say) recover them all.
+		prepare.RecoverDatabases(termCtx, cfg, f.slugVal, f.wtRoot, f.repoID, f.wtID, st.Store,
+			prepare.FailedDBIndices(f.err))
 	}
 	_ = st.Store.WriteEvent(termCtx, store.LevelError, store.EvtWorktreeCreateError, withRetryHint(f.err.Error()),
 		f.repoID, f.wtID, "", 0, map[string]string{

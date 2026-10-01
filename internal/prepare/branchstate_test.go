@@ -141,6 +141,8 @@ type bsFixture struct {
 	// these fixtures). Only read when the worktree row is the main one.
 	defaultBranch func() string
 	migrateFP     string
+	// migrateFn, when set, stands in for the migrate step.
+	migrateFn func(ctx context.Context, active string) error
 }
 
 func newBSFixture(t *testing.T) *bsFixture {
@@ -181,6 +183,16 @@ func newBSFixture(t *testing.T) *bsFixture {
 // drives one swap-lifecycle pass.
 func (f *bsFixture) run(branch string) Outcome {
 	f.t.Helper()
+	out, err := f.runErr(branch)
+	if err != nil {
+		f.t.Fatalf("runBranchScoped(%s): %v", branch, err)
+	}
+	return out
+}
+
+// runErr is run that returns the lifecycle error instead of failing.
+func (f *bsFixture) runErr(branch string) (Outcome, error) {
+	f.t.Helper()
 	ctx := context.Background()
 	if _, err := f.st.EnsureWorktree(ctx, f.repoID, f.worktreePath, "wtslug", branch); err != nil {
 		f.t.Fatal(err)
@@ -201,12 +213,9 @@ func (f *bsFixture) run(branch string) Outcome {
 		cfg: f.cfg, d: f.d, dbIdx: 0, worktreePath: f.worktreePath,
 		st: f.st, repoID: f.repoID, worktreeID: f.worktreeID,
 		eng: f.eng, resolveParent: rp, resolveBaseBranchFn: rbb,
-		resolveDefaultBranchFn: rdb, migrateFP: f.migrateFP,
+		resolveDefaultBranchFn: rdb, migrateFP: f.migrateFP, migrateFn: f.migrateFn,
 	})
-	if err != nil {
-		f.t.Fatalf("runBranchScoped(%s): %v", branch, err)
-	}
-	return out
+	return out, err
 }
 
 func (f *bsFixture) durable(branch string) string { return f.eng.durable(f.active, branch) }
@@ -822,5 +831,110 @@ func TestBranchScopedSwapAdvancesMarkerBeforeFill(t *testing.T) {
 	// develop's durable copy survived the failed swap intact.
 	if dd := f.fake.data[f.durable("develop")]; dd["develop"] != "1" {
 		t.Fatalf("durable(develop) must survive a failed swap, got %v", dd)
+	}
+}
+
+// failMigrateOn returns a migrateFn that fails whenever the active
+// namespace holds `key` — modelling a durable whose schema and
+// migrations ledger disagree (#119).
+func (f *bsFixture) failMigrateOn(key string) func(context.Context, string) error {
+	return func(_ context.Context, active string) error {
+		if _, bad := f.fake.data[active][key]; bad {
+			return errors.New("migrate: Duplicate column name 'two_factor_secret'")
+		}
+		return nil
+	}
+}
+
+// TestResumeMigrateFailureReseedsFromParent: a durable copy that cannot
+// migrate is not resumed forever (#119). The active slot is re-seeded
+// from the parent, migrates cleanly, and the poisoned durable is dropped
+// so the next fill cannot pick it up again.
+func TestResumeMigrateFailureReseedsFromParent(t *testing.T) {
+	f := newBSFixture(t)
+	f.d.Migrate = &config.Step{Run: "true"}
+	f.set(f.durable("feature/x"), map[string]string{"broken": "1"})
+	f.set("parentdb", map[string]string{"p": "1"})
+	f.parent = func(string) (string, bool, error) { return "parentdb", true, nil }
+	f.migrateFn = f.failMigrateOn("broken")
+
+	out := f.run("feature/x")
+	if out.Decision != "reseed:parent" {
+		t.Fatalf("decision = %q, want reseed:parent", out.Decision)
+	}
+	f.assertActive("p")
+	f.assertMarker("feature/x")
+	if _, ok := f.fake.data[f.durable("feature/x")]; ok {
+		t.Fatal("durable that failed to migrate must be dropped after a clean re-seed")
+	}
+}
+
+// TestResumeMigrateFailureKeepsDurableWhenReseedAlsoFails: when the
+// re-seeded namespace fails to migrate too, the migrations themselves are
+// broken — the durable holds the branch's data and must survive, and the
+// error names `treeman db reset`.
+func TestResumeMigrateFailureKeepsDurableWhenReseedAlsoFails(t *testing.T) {
+	f := newBSFixture(t)
+	f.d.Migrate = &config.Step{Run: "true"}
+	f.set(f.durable("feature/x"), map[string]string{"data": "1"})
+	f.set("parentdb", map[string]string{"p": "1"})
+	f.parent = func(string) (string, bool, error) { return "parentdb", true, nil }
+	f.migrateFn = func(context.Context, string) error { return errors.New("migrate: syntax error") }
+
+	_, err := f.runErr("feature/x")
+	if err == nil {
+		t.Fatal("want migrate error")
+	}
+	if !strings.Contains(err.Error(), "treeman db reset --engine mysql") {
+		t.Fatalf("error should carry the db reset hint, got %v", err)
+	}
+	if _, ok := f.fake.data[f.durable("feature/x")]; !ok {
+		t.Fatal("durable must be kept when the re-seed fails to migrate too")
+	}
+}
+
+// TestMigrateFailureOnNoopDoesNotReseed: only a just-resumed durable is
+// suspect. A migrate failure on the already-loaded branch returns the
+// error (with the reset hint) and leaves the data alone.
+func TestMigrateFailureOnNoopDoesNotReseed(t *testing.T) {
+	f := newBSFixture(t)
+	f.d.Migrate = &config.Step{Run: "true"}
+	f.migrateFn = func(context.Context, string) error { return nil }
+	f.run("develop")
+	f.write(f.active, "k", "v")
+
+	f.migrateFn = func(context.Context, string) error { return errors.New("migrate: boom") }
+	f.migrateFP = "changed" // force the migrate to run
+	_, err := f.runErr("develop")
+	if err == nil || !strings.Contains(err.Error(), "treeman db reset") {
+		t.Fatalf("want migrate error with reset hint, got %v", err)
+	}
+	f.assertActive("k")
+}
+
+// TestResumeMigrateAbortDoesNotReseed: a migrate that died from a dropped
+// engine connection or a cancelled prepare says nothing about the
+// durable. It must be neither re-seeded over nor dropped.
+func TestResumeMigrateAbortDoesNotReseed(t *testing.T) {
+	for name, cause := range map[string]error{
+		"transient": errors.New("migrate: connection refused"),
+		"cancelled": fmt.Errorf("migrate: %w", context.Canceled),
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newBSFixture(t)
+			f.d.Migrate = &config.Step{Run: "true"}
+			f.set(f.durable("feature/x"), map[string]string{"data": "1"})
+			f.set("parentdb", map[string]string{"p": "1"})
+			f.parent = func(string) (string, bool, error) { return "parentdb", true, nil }
+			f.migrateFn = func(context.Context, string) error { return cause }
+
+			if _, err := f.runErr("feature/x"); !errors.Is(err, cause) {
+				t.Fatalf("want %v, got %v", cause, err)
+			}
+			f.assertActive("data") // still the resumed copy, not the parent
+			if _, ok := f.fake.data[f.durable("feature/x")]; !ok {
+				t.Fatal("durable must survive an aborted migrate")
+			}
+		})
 	}
 }

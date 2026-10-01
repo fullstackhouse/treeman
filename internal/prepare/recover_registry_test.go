@@ -86,7 +86,7 @@ func TestRecoverTestCloneRegistryDriven(t *testing.T) {
 	d := config.DatabaseConfig{Engine: "mysql", NameTemplate: "app_{slug}"}
 	tplCtx := template.FromSlug(slug.Slug{Value: "wt_demo", Source: slug.SourceTicket})
 
-	if err := recoverTestClone(context.Background(), cfg, d, tplCtx, 0, 0, st); err != nil {
+	if _, err := recoverTestClone(context.Background(), cfg, d, tplCtx, 0, 0, st); err != nil {
 		t.Fatalf("recoverTestClone: %v", err)
 	}
 	fake.mu.Lock()
@@ -113,7 +113,7 @@ func TestRecoverTestCloneRegistryDriven(t *testing.T) {
 
 	// Unconfigured family → silent no-op, no dial.
 	cfgUnwired := &config.Config{}
-	if err := recoverTestClone(context.Background(), cfgUnwired, d, tplCtx, 0, 0, st); err != nil {
+	if _, err := recoverTestClone(context.Background(), cfgUnwired, d, tplCtx, 0, 0, st); err != nil {
 		t.Errorf("unconfigured recovery should be a no-op, got %v", err)
 	}
 }

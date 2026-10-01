@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 
 	"github.com/stubbedev/treeman/internal/config"
 	"github.com/stubbedev/treeman/internal/db/engineconn"
@@ -50,11 +51,31 @@ func RecoverStaleWorktree(
 	repoID, worktreeID int64,
 	st *store.Store,
 ) {
+	RecoverDatabases(ctx, cfg, sl, worktreePath, repoID, worktreeID, st, nil)
+}
+
+// RecoverDatabases is RecoverStaleWorktree restricted to the
+// cfg.Databases indices in `only` (nil = every database). A finalize
+// whose prepare failed on some databases recovers just those: the
+// others completed, and dropping them would leave e.g. a healthy
+// testing DB missing until the next successful finalize (#119).
+func RecoverDatabases(
+	ctx context.Context,
+	cfg *config.Config,
+	sl string,
+	worktreePath string,
+	repoID, worktreeID int64,
+	st *store.Store,
+	only []int,
+) {
 	if st == nil || cfg == nil {
 		return
 	}
 	tplCtx := template.FromSlug(slug.Slug{Value: sl, Source: slug.SourceTicket})
-	for _, d := range cfg.Databases {
+	for i, d := range cfg.Databases {
+		if only != nil && !slices.Contains(only, i) {
+			continue
+		}
 		if d.BranchScoped {
 			if err := recoverBranchScoped(ctx, cfg, d, worktreePath, repoID, worktreeID, st); err != nil {
 				_ = st.WriteEvent(ctx, store.LevelWarn, store.EvtWorktreeRecoverError,
@@ -67,7 +88,8 @@ func RecoverStaleWorktree(
 			}
 			continue
 		}
-		if err := recoverTestClone(ctx, cfg, d, tplCtx, repoID, worktreeID, st); err != nil {
+		name, err := recoverTestClone(ctx, cfg, d, tplCtx, repoID, worktreeID, st)
+		if err != nil {
 			_ = st.WriteEvent(ctx, store.LevelWarn, store.EvtWorktreeRecoverError,
 				fmt.Sprintf("engine=%s: %v", d.Engine, err),
 				repoID, worktreeID, "", 0, map[string]string{
@@ -77,8 +99,13 @@ func RecoverStaleWorktree(
 		}
 		// The namespaces this worktree's template-path databases were built
 		// into are gone now — drop their built-at fingerprints so the next
-		// prepare restores instead of trusting the skip gate.
-		_ = st.ClearTemplateBuiltForWorktree(ctx, worktreeID)
+		// prepare restores instead of trusting the skip gate. A filtered
+		// recovery clears only the dropped database's fingerprint.
+		if only == nil {
+			_ = st.ClearTemplateBuiltForWorktree(ctx, worktreeID)
+		} else if name != "" {
+			_ = st.ClearTemplateBuiltForKey(ctx, worktreeID, name)
+		}
 	}
 }
 
@@ -94,27 +121,27 @@ func recoverTestClone(
 	tplCtx template.Context,
 	repoID, worktreeID int64,
 	st *store.Store,
-) error {
+) (string, error) {
 	fam, _ := engine.Canonical(d.Engine)
 	conn, configured, err := engineconn.Connect(ctx, cfg, fam, d.Connection)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if !configured {
 		// No connection block: nothing to drop, same as before.
-		return nil
+		return "", nil
 	}
 	defer func() { _ = conn.Close() }()
 	name, err := template.Render(d.NameTemplate, tplCtx)
 	if err != nil {
-		return err
+		return "", err
 	}
 	dropped, err := conn.DropMatching(ctx, name)
 	if err != nil {
-		return err
+		return name, err
 	}
 	emitRecoveryDrop(ctx, st, repoID, worktreeID, d.Engine, name, dropped)
-	return nil
+	return name, nil
 }
 
 func recoverBranchScoped(

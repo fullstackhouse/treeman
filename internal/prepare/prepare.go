@@ -632,46 +632,104 @@ func RunFiltered(
 
 	results := make([]Outcome, len(cfg.Databases))
 	hasResult := make([]bool, len(cfg.Databases))
-	g, gctx := errgroup.WithContext(ctx)
+	errs := make([]*DBError, len(cfg.Databases))
+	// A plain Group, not errgroup.WithContext: databases are independent,
+	// so one failing must not cancel its siblings mid-step (#119 — a dev
+	// DB's failed migrate killed the testing DB's rollback halfway and
+	// left it unmigrated). Every database runs to completion and the
+	// failures are collected into one RunError.
+	var g errgroup.Group
 	for i, d := range cfg.Databases {
 		if opts.FilterDBs && opts.OnlyDBIndex != i {
 			continue
 		}
 		g.Go(func() error {
-			o, err := prepareOneEngine(gctx, cfg, d, i, tplCtx, worktreePath, st, repoID, worktreeID, inheritedEnv)
-			if err != nil {
-				return err
+			o, err := prepareOneEngine(ctx, cfg, d, i, tplCtx, worktreePath, st, repoID, worktreeID, inheritedEnv)
+			if err == nil {
+				// A successful template-path run leaves the worktree's
+				// namespaces populated at this fingerprint — record it so the
+				// next cache hit can skip the restore entirely (branch-scoped
+				// outcomes carry no fingerprint and skip the record).
+				if !o.CacheHit && o.Fingerprint != "" && o.SourceDB != "" {
+					_ = st.SetTemplateBuilt(ctx, worktreeID, o.SourceDB, d.Engine, d.Connection, o.Fingerprint)
+				}
+				results[i] = o
+				hasResult[i] = true
+			} else {
+				errs[i] = &DBError{Index: i, Engine: d.Engine, Err: err}
 			}
-			// A successful template-path run leaves the worktree's
-			// namespaces populated at this fingerprint — record it so the
-			// next cache hit can skip the restore entirely (branch-scoped
-			// outcomes carry no fingerprint and skip the record).
-			if !o.CacheHit && o.Fingerprint != "" && o.SourceDB != "" {
-				_ = st.SetTemplateBuilt(gctx, worktreeID, o.SourceDB, d.Engine, d.Connection, o.Fingerprint)
-			}
-			results[i] = o
-			hasResult[i] = true
 			return nil
 		})
 	}
-	if err := g.Wait(); err != nil {
-		// Return whatever outcomes did land so callers can log a
-		// partial-success picture before surfacing the error.
-		var outcomes []Outcome
-		for i, ok := range hasResult {
-			if ok {
-				outcomes = append(outcomes, results[i])
-			}
-		}
-		return outcomes, err
-	}
+	_ = g.Wait()
+	// Outcomes that did land are returned alongside any error so callers
+	// can log a partial-success picture before surfacing it.
 	var outcomes []Outcome
 	for i, ok := range hasResult {
 		if ok {
 			outcomes = append(outcomes, results[i])
 		}
 	}
+	var failed []*DBError
+	for _, e := range errs {
+		if e != nil {
+			failed = append(failed, e)
+		}
+	}
+	if len(failed) > 0 {
+		return outcomes, &RunError{Failed: failed}
+	}
 	return outcomes, nil
+}
+
+// DBError is one database's failure inside the error RunFiltered
+// returns. Index is the database's position in cfg.Databases.
+type DBError struct {
+	Index  int
+	Engine string
+	Err    error
+}
+
+func (e *DBError) Error() string { return e.Err.Error() }
+func (e *DBError) Unwrap() error { return e.Err }
+
+// RunError is the error RunFiltered returns: every database that failed,
+// in cfg.Databases order. Each one still matches errors.Is / errors.As
+// through Unwrap.
+type RunError struct {
+	Failed []*DBError
+}
+
+func (e *RunError) Error() string {
+	msgs := make([]string, len(e.Failed))
+	for i, f := range e.Failed {
+		msgs[i] = f.Error()
+	}
+	return strings.Join(msgs, "\n")
+}
+
+func (e *RunError) Unwrap() []error {
+	out := make([]error, len(e.Failed))
+	for i, f := range e.Failed {
+		out[i] = f
+	}
+	return out
+}
+
+// FailedDBIndices lists the cfg.Databases indices whose prepare failed
+// in an error returned (possibly wrapped) by Run / RunFiltered. nil means
+// err carries no per-database attribution, so the caller cannot tell
+// which databases are healthy.
+func FailedDBIndices(err error) []int {
+	var re *RunError
+	if !errors.As(err, &re) {
+		return nil
+	}
+	idx := make([]int, len(re.Failed))
+	for i, f := range re.Failed {
+		idx[i] = f.Index
+	}
+	return idx
 }
 
 // prepareOneEngine dispatches one database to its engine prepare

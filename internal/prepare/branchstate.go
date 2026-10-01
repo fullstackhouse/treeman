@@ -702,6 +702,9 @@ type branchScopedArgs struct {
 	// resolveDefaultBranchFn, when non-nil, overrides the origin/HEAD
 	// default-branch resolver used by `adoptBranch`. Only tests set it.
 	resolveDefaultBranchFn func(ctx context.Context) string
+	// migrateFn, when non-nil, replaces the migrate step runner. Only
+	// tests set it.
+	migrateFn func(ctx context.Context, active string) error
 }
 
 // runBranchScoped is the unified swap lifecycle for one branch-scoped
@@ -779,25 +782,9 @@ func runBranchScoped(ctx context.Context, a branchScopedArgs) (Outcome, error) {
 		return Outcome{}, fmt.Errorf("record active-branch marker: %w", err)
 	}
 
-	migrated := false
-	if a.d.Migrate != nil {
-		prevFP, hasPrev, _ := a.st.GetBranchMigrated(ctx, a.worktreeID, active, branch)
-		if migrateNeeded(builtEmpty, hasPrev, prevFP, a.migrateFP) {
-			if err := a.runStep(ctx, runner.FromMigrate(*a.d.Migrate), active, "migrate"); err != nil {
-				return Outcome{}, err
-			}
-			migrated = true
-			// Record the fingerprint only when we have one; an empty
-			// fingerprint can never be matched, so the next prepare
-			// re-migrates (correct — we couldn't prove it was at head).
-			if a.migrateFP != "" {
-				_ = a.st.SetBranchMigrated(ctx, a.worktreeID, active, branch, a.migrateFP)
-			}
-		} else {
-			a.event(ctx, store.EvtMigrateSkip,
-				fmt.Sprintf("engine=%s active=%s branch=%s migrate skipped (inputs unchanged)", a.eng.engine, active, branch),
-				map[string]string{"fingerprint": a.migrateFP})
-		}
+	migrated, builtEmpty, decision, err := a.migrateStep(ctx, active, branch, builtEmpty, decision)
+	if err != nil {
+		return Outcome{}, err
 	}
 	seeded := false
 	if a.d.Seed != nil && builtEmpty {
@@ -825,7 +812,14 @@ func runBranchScoped(ctx context.Context, a branchScopedArgs) (Outcome, error) {
 // Returns (builtEmpty, decision). Extracted verbatim from
 // runBranchScoped's `case !exists` block.
 func (a branchScopedArgs) seedFresh(ctx context.Context, active, branch string) (bool, string, error) {
-	filled, how, ferr := a.fill(ctx, active, branch)
+	return a.seedFreshFrom(ctx, active, branch, true)
+}
+
+// seedFreshFrom is seedFresh with the durable-resume source optional:
+// useDurable=false skips this branch's own durable copy and seeds from
+// the parent / base snapshot / dump / empty chain only.
+func (a branchScopedArgs) seedFreshFrom(ctx context.Context, active, branch string, useDurable bool) (bool, string, error) {
+	filled, how, ferr := a.fill(ctx, active, branch, useDurable)
 	if ferr != nil {
 		return false, "", ferr
 	}
@@ -898,7 +892,7 @@ func (a branchScopedArgs) swapBranch(ctx context.Context, active, old, branch st
 	if err := a.st.SetActiveBranch(ctx, a.repoID, a.worktreeID, active, branch, a.eng.engine); err != nil {
 		return "", fmt.Errorf("record active-branch marker (pre-fill): %w", err)
 	}
-	filled, how, ferr := a.fill(ctx, active, branch)
+	filled, how, ferr := a.fill(ctx, active, branch, true)
 	if ferr != nil {
 		return "", ferr
 	}
@@ -979,7 +973,7 @@ func (a branchScopedArgs) recordClean(ctx context.Context, active, branch, decis
 		dirty()
 		return
 	}
-	if decision == "adopt" || strings.HasSuffix(decision, ":resume") {
+	if decision == "adopt" || isResume(decision) {
 		if w, werr := a.eng.drv.Watermark(ctx, active); werr == nil && w != "" {
 			_ = a.st.SetActiveBranchClean(ctx, a.repoID, a.worktreeID, active, branch, a.eng.engine, true, w)
 			return
@@ -993,9 +987,10 @@ func (a branchScopedArgs) recordClean(ctx context.Context, active, branch, decis
 // upstream checkout) → the base branch's freshest durable SNAPSHOT (seed
 // from a parked base, e.g. `develop` that lives only as a ref). Returns
 // (filled, how) — filled=false means no source was available and the
-// caller decides the fallback (empty).
-func (a branchScopedArgs) fill(ctx context.Context, active, branch string) (bool, string, error) {
-	if a.resumeDurableVerified(ctx, active, branch) {
+// caller decides the fallback (empty). useDurable=false skips the resume
+// source (see reseedPastDurable).
+func (a branchScopedArgs) fill(ctx context.Context, active, branch string, useDurable bool) (bool, string, error) {
+	if useDurable && a.resumeDurableVerified(ctx, active, branch) {
 		return true, "resume", nil
 	}
 	parent, ok, err := a.parentDB(ctx, branch)
@@ -1275,6 +1270,107 @@ func (a branchScopedArgs) parentDB(ctx context.Context, branch string) (string, 
 		return a.resolveParent(ctx, branch)
 	}
 	return resolveBaseSourceDB(ctx, a.st, a.cfg, a.repoPath(ctx), a.repoID, a.dbIdx, a.eng.scope, branch)
+}
+
+// migrateStep runs the branch_scoped migrate when migrateNeeded says so
+// and records the migrated fingerprint. A failure on a just-resumed
+// durable falls back to reseedPastDurable, which can change builtEmpty
+// and the decision; both are returned alongside whether a migrate ran.
+func (a branchScopedArgs) migrateStep(
+	ctx context.Context,
+	active, branch string,
+	builtEmpty bool,
+	decision string,
+) (bool, bool, string, error) {
+	if a.d.Migrate == nil {
+		return false, builtEmpty, decision, nil
+	}
+	prevFP, hasPrev, _ := a.st.GetBranchMigrated(ctx, a.worktreeID, active, branch)
+	if !migrateNeeded(builtEmpty, hasPrev, prevFP, a.migrateFP) {
+		a.event(ctx, store.EvtMigrateSkip,
+			fmt.Sprintf("engine=%s active=%s branch=%s migrate skipped (inputs unchanged)", a.eng.engine, active, branch),
+			map[string]string{"fingerprint": a.migrateFP})
+		return false, builtEmpty, decision, nil
+	}
+	if err := a.migrate(ctx, active); err != nil {
+		// Only a migrate that genuinely failed on just-resumed data
+		// indicts the durable. An abort (teardown, watchdog) or a dropped
+		// engine connection says nothing about it, and re-seeding on one
+		// could discard the branch's data over a blip.
+		if !isResume(decision) || isCancellation(err) || isTransientConn(err) {
+			return false, builtEmpty, decision, fmt.Errorf("%w%s", err, resetHint(a.eng.engine))
+		}
+		builtEmpty, decision, err = a.reseedPastDurable(ctx, active, branch, err)
+		if err != nil {
+			return false, builtEmpty, decision, fmt.Errorf("%w%s", err, resetHint(a.eng.engine))
+		}
+	}
+	// Record the fingerprint only when we have one; an empty
+	// fingerprint can never be matched, so the next prepare
+	// re-migrates (correct — we couldn't prove it was at head).
+	if a.migrateFP != "" {
+		_ = a.st.SetBranchMigrated(ctx, a.worktreeID, active, branch, a.migrateFP)
+	}
+	return true, builtEmpty, decision, nil
+}
+
+// migrate runs the database's migrate step against `active`. Tests set
+// migrateFn to drive migrate outcomes without a real runner.
+func (a branchScopedArgs) migrate(ctx context.Context, active string) error {
+	if a.migrateFn != nil {
+		return a.migrateFn(ctx, active)
+	}
+	return a.runStep(ctx, runner.FromMigrate(*a.d.Migrate), active, "migrate")
+}
+
+// reseedPastDurable recovers from a migrate that failed on a freshly
+// resumed durable copy (#119). A durable whose schema and migrations
+// ledger disagree (e.g. a truncated ledger over a full schema) fails the
+// same way on every retry, and recovery keeps the durable, so the
+// worktree could never prepare again without a manual `db reset`.
+//
+// The active namespace is re-seeded WITHOUT the durable
+// (parent → base snapshot → dump → empty), then migrated again. Only
+// when that second migrate succeeds is the durable proven to be the
+// culprit and dropped, so the next fill cannot resume it. When the
+// second migrate also fails, the migrations themselves are broken: the
+// durable is kept and the second error returned. Returns the new
+// (builtEmpty, decision).
+func (a branchScopedArgs) reseedPastDurable(ctx context.Context, active, branch string, cause error) (bool, string, error) {
+	dur := a.eng.durable(active, branch)
+	a.event(ctx, store.EvtBranchVerifyWarn,
+		fmt.Sprintf("migrate on resumed durable %s for branch %q failed; re-seeding %s without it", dur, branch, active),
+		map[string]string{"durable": dur, "branch": branch, "error": cause.Error()})
+	// No Drop first: every fill primitive (Restore, RestoreParent, Empty)
+	// resets its target per the nsDriver contract.
+	builtEmpty, seeded, err := a.seedFreshFrom(ctx, active, branch, false)
+	if err != nil {
+		return false, "", fmt.Errorf("%w (re-seed without durable: %w)", cause, err)
+	}
+	if err := a.migrate(ctx, active); err != nil {
+		return false, "", err
+	}
+	_ = a.eng.drv.DropDurable(ctx, dur)
+	_ = a.st.DeleteBranchDurable(ctx, a.repoID, dur)
+	a.event(ctx, store.EvtBranchVerifyWarn,
+		fmt.Sprintf("dropped durable %s for branch %q: it failed to migrate, %s migrated cleanly after %s", dur, branch, active, seeded),
+		map[string]string{"durable": dur, "branch": branch})
+	return builtEmpty, "re" + seeded, nil
+}
+
+// isResume reports whether a runBranchScoped decision filled the active
+// namespace from this branch's own durable copy (seed:resume /
+// swap:resume).
+func isResume(decision string) bool { return strings.HasSuffix(decision, ":resume") }
+
+// resetHint names the manual escape hatch for a branch_scoped migrate
+// failure the automatic re-seed could not fix.
+func resetHint(engine string) string {
+	return fmt.Sprintf(
+		"\nhint: if this branch's %s database is stale or corrupt, `treeman db reset --engine %s` re-seeds it from the parent branch",
+		engine,
+		engine,
+	)
 }
 
 func (a branchScopedArgs) runStep(ctx context.Context, spec runner.Spec, active, label string) error {
