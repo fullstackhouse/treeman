@@ -321,6 +321,7 @@ func addGitWorktree(ctx context.Context, req CreateRequest, wtPath *string) erro
 	if base == "" {
 		base = DetectDefaultBranch(ctx, req.RepoRoot)
 	}
+	baseName := base
 	branchExists := gitcmd.Exists(ctx, req.RepoRoot, "refs/heads/"+req.Branch)
 	if !branchExists && !req.NoFetch {
 		_ = gitcmd.RunPiped(ctx, req.RepoRoot, nil, nil, "fetch", "origin", base, "--quiet")
@@ -333,6 +334,14 @@ func addGitWorktree(ctx context.Context, req CreateRequest, wtPath *string) erro
 		gitArgs = []string{"worktree", "add", *wtPath, req.Branch}
 	} else {
 		gitArgs = []string{"worktree", "add", "-b", req.Branch, *wtPath, base}
+		// A branch forked off another base must not adopt `origin/<base>`
+		// as its upstream, or it never reads `[gone]` after its own remote
+		// branch is merged and deleted (see gitcmd.RecordBranchBase); the
+		// base is recorded in git config instead, below. A remote-only
+		// checkout (base == branch) keeps tracking its own origin ref.
+		if baseName != req.Branch {
+			gitArgs = []string{"worktree", "add", "--no-track", "-b", req.Branch, *wtPath, base}
+		}
 	}
 	// Route git's output to stderr (not stdout) so the --print-path
 	// shell idiom — `cd "$(treeman worktree create x --print-path)"` —
@@ -348,6 +357,9 @@ func addGitWorktree(ctx context.Context, req CreateRequest, wtPath *string) erro
 			return fmt.Errorf("git worktree add: %w: %s", err, tail)
 		}
 		return fmt.Errorf("git worktree add: %w", err)
+	}
+	if !branchExists {
+		gitcmd.RecordBranchBase(ctx, req.RepoRoot, req.Branch, baseName)
 	}
 	if abs, err := filepath.Abs(*wtPath); err == nil {
 		*wtPath = abs

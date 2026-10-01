@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/stubbedev/treeman/internal/config"
+	"github.com/stubbedev/treeman/internal/prepare"
 	"github.com/stubbedev/treeman/internal/store"
 	"github.com/stubbedev/treeman/pkg/safego"
 )
@@ -87,6 +88,11 @@ type State struct {
 	// for the daemon's lifetime; entries are append-only.
 	reapQueuesMu sync.Mutex
 	reapQueues   map[string]chan string
+
+	// untrackedSeen carries the first-seen clock for untracked durables
+	// across auto-fetch sweeps (see prepare.UntrackedSeen). Zero value is
+	// ready to use.
+	untrackedSeen prepare.UntrackedSeen
 
 	// dropQueues mirrors reapQueues for DROP DATABASE work. Each repo
 	// has a single drain goroutine — sequential DROP per repo avoids

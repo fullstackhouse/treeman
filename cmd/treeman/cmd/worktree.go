@@ -1754,7 +1754,14 @@ func goCheckout(ctx context.Context, repoRoot, branch, from string, create, noFe
 
 	runCheckoutIn := func(dir string) error {
 		args := []string{"checkout"}
+		// Same tracking rule as worktree create: a branch forked off
+		// another base records it in git config instead of adopting
+		// `origin/<base>` as its upstream (see gitcmd.RecordBranchBase).
+		forked := mode == "create" && base != "" && strings.TrimPrefix(base, "origin/") != branch
 		if mode == "create" {
+			if forked {
+				args = append(args, "--no-track")
+			}
 			args = append(args, "-b", branch)
 			if base != "" {
 				args = append(args, base)
@@ -1764,7 +1771,13 @@ func goCheckout(ctx context.Context, repoRoot, branch, from string, create, noFe
 		}
 		// stdout goes to stderr — `wt go` reserves stdout for
 		// the worktree path (consumed by `cd $(treeman worktree go …)`).
-		return gitcmd.RunPiped(ctx, dir, os.Stderr, os.Stderr, args...)
+		if err := gitcmd.RunPiped(ctx, dir, os.Stderr, os.Stderr, args...); err != nil {
+			return err
+		}
+		if forked {
+			gitcmd.RecordBranchBase(ctx, dir, branch, base)
+		}
+		return nil
 	}
 
 	// (4) Not in a linked worktree → checkout in cwd's repo root.

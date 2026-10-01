@@ -4,8 +4,11 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/stubbedev/treeman/internal/config"
 	"github.com/stubbedev/treeman/internal/gitcmd"
@@ -231,20 +234,6 @@ func ReapOrphanDurables(ctx context.Context, cfg *config.Config, st *store.Store
 // branch durables.
 const esDurableMarker = "tmbs_"
 
-// hasESBranchScoped reports whether the repo configures a branch_scoped
-// elasticsearch database — the only case the ES orphan reconcile applies to.
-func hasESBranchScoped(cfg *config.Config) bool {
-	for _, d := range cfg.Databases {
-		if !d.BranchScoped {
-			continue
-		}
-		if _, eng, ok := branchScopeFor(d.Engine); ok && eng == "elasticsearch" {
-			return true
-		}
-	}
-	return false
-}
-
 // esDurablePrefix extracts the durable family prefix "tmbs_<16hex>_" from an ES
 // index name, mirroring branchEngine.durable for the prefix/elasticsearch
 // scope. ok=false for any name that isn't a treeman ES durable — snapshot-cache
@@ -256,42 +245,201 @@ func esDurablePrefix(index string) (string, bool) {
 		return "", false
 	}
 	// bsHash emits exactly 16 lowercase-hex chars, followed by the trailing '_'.
-	if len(rest) < 17 || rest[16] != '_' {
+	if len(rest) < 17 || rest[16] != '_' || !isBSHash(rest[:16]) {
 		return "", false
-	}
-	for i := range 16 {
-		c := rest[i]
-		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
-			return "", false
-		}
 	}
 	return esDurableMarker + rest[:16] + "_", true
 }
 
-// ReapUntrackedESDurables drops branch_scoped Elasticsearch durable index
-// families (`tmbs_<hash>_*`) that NO repo's branch_durables row references. It
-// is the catch-all the two registry-driven reapers structurally can't be: both
-// ReapBranchDurables and ReapOrphanDurables key off the branch_durables table,
-// so a durable with no row at all is invisible to them. Those untracked
-// durables come from durables captured before the branch_durables table existed
-// (migration 0012), a Capture that wrote the index but died before
-// RecordBranchDurable, or a DropDurable that failed after the row was deleted.
-// Left unbounded they accumulate as ES shards until the single-node dev cluster
-// can't recover them on restart (the 2625-index meltdown).
-//
-// Safe by construction: the namespace a live worktree connects to is
-// `kho_<slug>_*`, never `tmbs_*`; the keep-set is built across ALL repos so a
-// shared cluster never has one repo's sweep drop another's durable; and on any
-// registry- or list-read error it declines to drop (same posture as
-// ReapOrphanDurables on a git error). The caller skips it while a finalize is
-// in flight so it can't race a Capture that hasn't yet recorded its row.
-func ReapUntrackedESDurables(ctx context.Context, cfg *config.Config, st *store.Store, repoID int64) {
-	if !hasESBranchScoped(cfg) {
-		return
+// isBSHash reports whether s is exactly a bsHash: 16 lowercase-hex chars.
+func isBSHash(s string) bool {
+	if len(s) != 16 {
+		return false
 	}
-	be, closeEng, err := connectBranchEngine(ctx, cfg, "elasticsearch", "", nil, nil)
+	for i := range 16 {
+		c := s[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// untrackedMarker is the name prefix branchEngine.durable emits for each
+// engine the untracked-durable reconcile covers. Redis is absent: its
+// durables are key prefixes inside one keyspace, and enumerating them means
+// a full SCAN of the live keyspace every sweep.
+var untrackedMarker = map[string]string{
+	"mysql":         "_tmbs_",
+	"postgres":      "_tmbs_",
+	"mongodb":       "_tmbs_",
+	"s3":            "tmbs-",
+	"elasticsearch": esDurableMarker,
+}
+
+// durableFamily maps an engine-side name to the durable it belongs to, as
+// branchEngine.durable spells it (and as branch_durables stores it). The
+// name-scoped engines and S3 hold one durable per database/bucket, so the
+// name must be EXACTLY marker+bsHash; ES durables are index families
+// sharing a "tmbs_<hash>_" prefix. ok=false for anything else, so a user
+// database that merely starts with the marker is never touched.
+func durableFamily(eng, name string) (string, bool) {
+	if eng == "elasticsearch" {
+		return esDurablePrefix(name)
+	}
+	marker, ok := untrackedMarker[eng]
+	if !ok {
+		return "", false
+	}
+	rest, ok := strings.CutPrefix(name, marker)
+	if !ok || !isBSHash(rest) {
+		return "", false
+	}
+	return name, true
+}
+
+// listDurableCandidates lists the engine-side names starting with the
+// engine's durable marker. ok=false for an adapter with no listing.
+func listDurableCandidates(ctx context.Context, drv nsDriver, marker string) ([]string, bool, error) {
+	var names []string
+	var err error
+	switch a := drv.(type) {
+	case mysqlNS:
+		names, err = a.d.ListMatching(ctx, marker)
+	case postgresNS:
+		names, err = a.d.ListMatching(ctx, marker)
+	case mongoNS:
+		names, err = a.d.ListMatching(ctx, marker)
+	case s3NS:
+		names, err = a.d.ListMatching(ctx, marker)
+	case esNS:
+		names, err = a.d.ListMatching(ctx, marker)
+	default:
+		return nil, false, nil
+	}
+	return names, true, err
+}
+
+// UntrackedGraceDefault is how long a durable must have been seen untracked
+// before the reconcile drops it.
+const UntrackedGraceDefault = 10 * time.Minute
+
+// UntrackedSeen remembers when each untracked durable was first observed,
+// so ReapUntrackedDurables only drops one that stayed untracked across
+// sweeps at least `Grace` apart. That closes the window between a Capture
+// writing a durable and RecordBranchDurable tracking it — captures run
+// outside a finalize too (in-worktree checkout, teardown, `db save`), so
+// the in-flight-finalize gate alone can't cover them. The zero value is
+// usable; Grace 0 means UntrackedGraceDefault.
+type UntrackedSeen struct {
+	Grace time.Duration
+	// Now is the clock; nil means time.Now. Tests pin it.
+	Now func() time.Time
+
+	mu    sync.Mutex
+	first map[string]time.Time
+}
+
+// observe records the durables seen untracked for one engine this sweep
+// and returns those first seen at least Grace ago. A durable no longer in
+// the untracked set (tracked since, or gone) is forgotten, so its clock
+// restarts if it ever turns up untracked again.
+func (u *UntrackedSeen) observe(eng string, untracked map[string]struct{}) []string {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	now := time.Now()
+	if u.Now != nil {
+		now = u.Now()
+	}
+	grace := u.Grace
+	if grace <= 0 {
+		grace = UntrackedGraceDefault
+	}
+	if u.first == nil {
+		u.first = map[string]time.Time{}
+	}
+	keyPrefix := eng + "\x00"
+	for k := range u.first {
+		if name, ok := strings.CutPrefix(k, keyPrefix); ok {
+			if _, still := untracked[name]; !still {
+				delete(u.first, k)
+			}
+		}
+	}
+	var due []string
+	for name := range untracked {
+		k := keyPrefix + name
+		first, seen := u.first[k]
+		if !seen {
+			u.first[k] = now
+			continue
+		}
+		if now.Sub(first) >= grace {
+			due = append(due, name)
+		}
+	}
+	sort.Strings(due)
+	return due
+}
+
+// ReapUntrackedDurables drops branch_scoped durables that NO repo's
+// branch_durables row references, for every engine the repo configures
+// branch_scoped (mysql, postgres, mongodb, s3, elasticsearch). It is the
+// catch-all the two registry-driven reapers structurally can't be: both
+// ReapBranchDurables and ReapOrphanDurables key off the branch_durables
+// table, so a durable with no row at all is invisible to them. Untracked
+// durables come from captures before the branch_durables table existed
+// (migration 0012), a Capture that wrote the durable but died before
+// RecordBranchDurable, or a DropDurable that failed after the row was
+// deleted. Left unbounded they accumulate forever — on ES as shards until
+// the single-node dev cluster can't recover on restart (the 2625-index
+// meltdown).
+//
+// Safe by construction: only names that are exactly a durable spelling
+// (marker + 16-hex hash) are candidates, and the namespace a live
+// worktree connects to never has that shape; the keep-set is built across
+// ALL repos so a shared server never has one repo's sweep drop another's
+// durable; a durable must stay untracked for `seen.Grace` across sweeps
+// before it is dropped (see UntrackedSeen); and on any registry- or
+// list-read error the engine is skipped rather than risk dropping on an
+// incomplete keep-set.
+func ReapUntrackedDurables(ctx context.Context, cfg *config.Config, st *store.Store, repoID int64, seen *UntrackedSeen) {
+	type target struct{ engine, connection string }
+	var targets []target
+	done := map[target]bool{}
+	for _, d := range cfg.Databases {
+		if !d.BranchScoped {
+			continue
+		}
+		_, eng, ok := branchScopeFor(d.Engine)
+		if !ok {
+			continue
+		}
+		if _, covered := untrackedMarker[eng]; !covered {
+			continue
+		}
+		t := target{eng, d.Connection}
+		if !done[t] {
+			done[t] = true
+			targets = append(targets, t)
+		}
+	}
+	for _, t := range targets {
+		reapUntrackedEngine(ctx, cfg, st, repoID, seen, t.engine, t.connection)
+	}
+}
+
+func reapUntrackedEngine(
+	ctx context.Context,
+	cfg *config.Config,
+	st *store.Store,
+	repoID int64,
+	seen *UntrackedSeen,
+	eng, connection string,
+) {
+	be, closeEng, err := connectBranchEngine(ctx, cfg, eng, connection, nil, nil)
 	if err != nil {
-		slog.Warn("reap untracked es durables: connect engine", "err", err)
+		slog.Warn("reap untracked durables: connect engine", "engine", eng, "err", err)
 		closeEng()
 		return
 	}
@@ -299,52 +447,57 @@ func ReapUntrackedESDurables(ctx context.Context, cfg *config.Config, st *store.
 	if be == nil {
 		return
 	}
-	esa, ok := be.drv.(esNS)
-	if !ok {
-		return
-	}
 
-	keep, err := st.ListAllDurableNamesByEngine(ctx, "elasticsearch")
+	keep, err := st.ListAllDurableNamesByEngine(ctx, eng)
 	if err != nil {
 		// Couldn't read the registry — declining to drop is the safe default;
 		// the next sweep retries. Dropping on an unreadable keep-set would risk
 		// wiping every durable.
-		slog.Warn("reap untracked es durables: list registry", "err", err)
+		slog.Warn("reap untracked durables: list registry", "engine", eng, "err", err)
 		return
 	}
-	indices, err := esa.d.ListMatching(ctx, esDurableMarker)
+	names, ok, err := listDurableCandidates(ctx, be.drv, untrackedMarker[eng])
+	if !ok {
+		return
+	}
 	if err != nil {
-		slog.Warn("reap untracked es durables: list indices", "err", err)
+		slog.Warn("reap untracked durables: list", "engine", eng, "err", err)
 		return
 	}
 
-	orphans := map[string]struct{}{}
-	for _, idx := range indices {
-		prefix, ok := esDurablePrefix(idx)
+	untracked := map[string]struct{}{}
+	for _, n := range names {
+		fam, ok := durableFamily(eng, n)
 		if !ok {
 			continue
 		}
-		if _, referenced := keep[prefix]; referenced {
+		if _, referenced := keep[fam]; referenced {
 			continue
 		}
-		orphans[prefix] = struct{}{}
+		untracked[fam] = struct{}{}
 	}
-	for prefix := range orphans {
-		dropped, derr := esa.d.DropMatching(ctx, prefix)
-		if derr != nil {
-			slog.Warn("reap untracked es durables: drop", "prefix", prefix, "err", derr)
-			continue
-		}
-		if len(dropped) == 0 {
+	for _, fam := range seen.observe(eng, untracked) {
+		dropped := "1"
+		if esa, isES := be.drv.(esNS); isES {
+			idx, derr := esa.d.DropMatching(ctx, fam)
+			if derr != nil {
+				slog.Warn("reap untracked durables: drop", "engine", eng, "durable", fam, "err", derr)
+				continue
+			}
+			if len(idx) == 0 {
+				continue
+			}
+			dropped = strconv.Itoa(len(idx))
+		} else if derr := be.drv.DropDurable(ctx, fam); derr != nil {
+			slog.Warn("reap untracked durables: drop", "engine", eng, "durable", fam, "err", derr)
 			continue
 		}
 		_ = st.WriteEvent(ctx, store.LevelInfo, store.EvtBranchReap,
-			fmt.Sprintf("elasticsearch: dropped %d untracked durable index(es) under %q (no branch_durables row in any repo)",
-				len(dropped), prefix),
+			fmt.Sprintf("%s: dropped untracked durable %q (no branch_durables row in any repo)", eng, fam),
 			repoID, 0, "", 0, map[string]string{
-				"engine":  "elasticsearch",
-				"durable": prefix,
-				"dropped": strconv.Itoa(len(dropped)),
+				"engine":  eng,
+				"durable": fam,
+				"dropped": dropped,
 				"reason":  "orphan_untracked",
 			})
 	}

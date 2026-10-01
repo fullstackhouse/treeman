@@ -137,3 +137,50 @@ func TestCreateIdempotentNoop(t *testing.T) {
 		t.Errorf("noop path drift: first=%q second=%q", first.WtPath, second.WtPath)
 	}
 }
+
+// TestCreateForkedBranchDoesNotTrackBase pins the --no-track rule: a branch
+// forked off `origin/<base>` must not adopt it as upstream (or it never reads
+// `[gone]` once its own remote branch is merged and deleted, and the merged-
+// branch prune + durable reap skip it forever). The base is recorded in git
+// config instead. A remote-only checkout (From == Branch) keeps tracking its
+// own origin ref.
+func TestCreateForkedBranchDoesNotTrackBase(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	withTempStore(t)
+	repo := gitRepo(t, "develop")
+	git := func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	// Self-remote, so create's pre-fetch resolves the base to origin/develop.
+	git("remote", "add", "origin", repo)
+	git("branch", "feature-remote")
+	git("fetch", "-q", "origin")
+	git("branch", "-D", "feature-remote") // now remote-only
+
+	ctx := context.Background()
+	if _, err := Create(ctx, CreateRequest{RepoRoot: repo, Branch: "feature-new", SkipHooks: true}, NoopSink{}); err != nil {
+		t.Fatalf("Create(feature-new): %v", err)
+	}
+	if out, err := exec.Command("git", "-C", repo, "rev-parse", "--abbrev-ref", "feature-new@{upstream}").CombinedOutput(); err == nil {
+		t.Errorf("feature-new must have no upstream, got %q", strings.TrimSpace(string(out)))
+	}
+	if got := git("config", "--get", "branch.feature-new.treemanBase"); got != "develop" {
+		t.Errorf("recorded base = %q, want develop", got)
+	}
+
+	if _, err := Create(ctx, CreateRequest{
+		RepoRoot: repo, Branch: "feature-remote", From: "feature-remote", SkipHooks: true,
+	}, NoopSink{}); err != nil {
+		t.Fatalf("Create(feature-remote): %v", err)
+	}
+	if got := git("rev-parse", "--abbrev-ref", "feature-remote@{upstream}"); got != "origin/feature-remote" {
+		t.Errorf("remote-only checkout upstream = %q, want origin/feature-remote", got)
+	}
+}

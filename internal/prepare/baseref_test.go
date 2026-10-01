@@ -362,3 +362,32 @@ func TestRenderMainBaseDBUsesOverlay(t *testing.T) {
 		t.Errorf("overlay merge mutated base config: %q", cfg.Databases[0].NameTemplate)
 	}
 }
+
+// TestResolveBaseBranch_PrefersRecordedBase covers --no-track creates: the
+// branch has no upstream, so the base comes from the recorded
+// `branch.<name>.treemanBase` — even when the main worktree sits on a
+// different branch that the fallback would otherwise pick.
+func TestResolveBaseBranch_PrefersRecordedBase(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	repo := t.TempDir()
+	gitRun(t, repo, "init", "-q", "-b", "master")
+	gitRun(t, repo, "config", "user.email", "t@t")
+	gitRun(t, repo, "config", "user.name", "t")
+	gitRun(t, repo, "commit", "-q", "--allow-empty", "-m", "v1")
+	gitRun(t, repo, "branch", "develop")
+	gitRun(t, repo, "branch", "feature/KON-2", "develop")
+	gitRun(t, repo, "config", "branch.feature/KON-2.treemanBase", "develop")
+
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "tm.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	if got := resolveBaseBranch(ctx, st, repo, 0, "feature/KON-2"); got != "develop" {
+		t.Fatalf("want develop (recorded base), got %q", got)
+	}
+}

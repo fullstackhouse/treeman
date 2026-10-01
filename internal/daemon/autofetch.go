@@ -274,16 +274,18 @@ func SyncRepo(ctx context.Context, st *State, r store.RepoRef, cfg *config.Confi
 		// pruned via a live worktree; this reclaims the rest by recorded name.
 		prepare.ReapOrphanDurables(ctx, cfg, st.Store, r.ID, r.Path)
 
-		// Deeper catch-all for Elasticsearch: drop ES durable index families
-		// (`tmbs_*`) that NO repo's registry references at all — durables that
-		// predate the branch_durables table or were left by a Capture that died
-		// before recording its row. Both reapers above are registry-driven and
-		// can't see those; left unbounded they pile up as ES shards until the
-		// single-node dev cluster can't recover. Skip while ANY finalize is in
-		// flight so the sweep can't race a Capture that hasn't recorded its row
-		// yet (it runs on the next refs change — one reclaims them).
+		// Deeper catch-all: drop durables (mysql/postgres/mongo databases, S3
+		// buckets, ES `tmbs_*` index families) that NO repo's registry
+		// references at all — durables that predate the branch_durables table
+		// or were left by a Capture that died before recording its row. Both
+		// reapers above are registry-driven and can't see those; left
+		// unbounded they pile up forever (on ES as shards until the
+		// single-node dev cluster can't recover). Skip while ANY finalize is
+		// in flight, and only drop what stayed untracked past the grace
+		// window, so the sweep can't race a Capture that hasn't recorded its
+		// row yet.
 		if len(st.SnapshotInFlightFinalizes()) == 0 {
-			prepare.ReapUntrackedESDurables(ctx, cfg, st.Store, r.ID)
+			prepare.ReapUntrackedDurables(ctx, cfg, st.Store, r.ID, &st.untrackedSeen)
 		}
 	}
 	return nil

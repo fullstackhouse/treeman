@@ -11,23 +11,24 @@ import (
 	"github.com/stubbedev/treeman/internal/template"
 )
 
-// baseBranchOf resolves a branch's tracked upstream and strips the
-// remote prefix, yielding the local base branch the new worktree was
-// forked off (e.g. "develop"). Returns "" when the branch has no
-// upstream configured — `resolveBaseBranch` then tries the
-// main-worktree fallback, and `branch_scoped` ultimately falls back
-// to the static `dump.path`.
+// baseBranchOf returns the local base branch a worktree's branch was
+// forked off (e.g. "develop"). Returns "" when neither source below knows
+// it — `resolveBaseBranch` then tries the main-worktree fallback, and
+// `branch_scoped` ultimately falls back to the static `dump.path`.
 //
-// Why upstream: treeman creates worktrees with
-// `git worktree add -b feature/x <path> origin/<base>`. Git's
-// default `branch.autoSetupMerge=true` sets feature/x's upstream to
-// `origin/<base>` when the start point is a remote-tracking branch,
-// so `@{upstream}` recovers the base. Branches cut from a purely
-// local ref (no remote-tracking start point) won't have an upstream;
-// those fall through to the main-worktree fallback below.
+//  1. The base treeman recorded in git config at create time
+//     (gitcmd.RecordBranchBase). treeman creates branches with
+//     --no-track, so this is the source for every branch it cut.
+//  2. The tracked upstream, remote prefix stripped. Covers branches
+//     cut before --no-track (git's `branch.autoSetupMerge=true` set
+//     their upstream to `origin/<base>`) and branches cut outside
+//     treeman from a remote-tracking start point.
 func baseBranchOf(ctx context.Context, repoRoot, branch string) string {
 	if branch == "" {
 		return ""
+	}
+	if b := gitcmd.BranchBase(ctx, repoRoot, branch); b != "" {
+		return b
 	}
 	out, err := gitcmd.String(ctx, repoRoot, "rev-parse", "--abbrev-ref", branch+"@{upstream}")
 	if err != nil || out == "" {
@@ -39,9 +40,9 @@ func baseBranchOf(ctx context.Context, repoRoot, branch string) string {
 // resolveBaseBranch returns the local branch a new worktree's
 // branch_scoped seed should mirror. Two-tier resolution:
 //
-//  1. Tracked upstream (`baseBranchOf`). Hits when treeman created
-//     the worktree off a remote-tracking start point — `@{upstream}`
-//     points to it directly.
+//  1. Recorded base or tracked upstream (`baseBranchOf`). Hits for
+//     every branch treeman created, and for branches cut off a
+//     remote-tracking start point.
 //  2. Main-worktree branch + merge-base sanity. Hits when the
 //     feature branch has no upstream (cut from a local ref, GitFlow
 //     branch where `branch.<name>.merge` points back at itself, or a
