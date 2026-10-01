@@ -160,6 +160,20 @@ func TestMultipleDumpsLoadInOrder(t *testing.T) {
 	}
 }
 
+// lastEventID is the newest events row id. Filtering later queries with
+// AfterID scopes them to rows written after this point exactly; a ms
+// timestamp cutoff (ts >= since) also matches a prior run's last events
+// when they land in the same millisecond. The e2e store writes events
+// synchronously, so every earlier event is already in the table.
+func lastEventID(t *testing.T, env *harness.Env) int64 {
+	t.Helper()
+	var id int64
+	if err := env.Store.DB.QueryRowContext(env.Ctx, `SELECT COALESCE(MAX(id), 0) FROM events`).Scan(&id); err != nil {
+		t.Fatalf("last event id: %v", err)
+	}
+	return id
+}
+
 func mustWrite(t *testing.T, path, body string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
@@ -211,12 +225,12 @@ func TestPostgresFanoutConcurrency(t *testing.T) {
 
 	// Re-prepare with unchanged inputs: the built-at gate makes this
 	// the no-op cache hit #38 promised — NO restore, NO clone events.
-	skipStartMs := time.Now().UnixMilli()
+	skipAfter := lastEventID(t, env)
 	skipOutcome := harness.AssertOutcome(t, env.RunPrepare(t, cfg), "postgres", true)
 	skipEvs, err := env.Store.QueryEvents(env.Ctx, store.EventFilter{
 		WorktreeID: env.WTID,
 		EventTypes: []string{"clones:restore:end"},
-		SinceMs:    skipStartMs,
+		AfterID:    skipAfter,
 	})
 	if err != nil {
 		t.Fatalf("query skip events: %v", err)
@@ -232,10 +246,11 @@ func TestPostgresFanoutConcurrency(t *testing.T) {
 		t.Fatalf("clear built marker: %v", err)
 	}
 
-	// Only count events emitted from THIS point forward — the prior
+	// Only count events emitted from THIS point forward (by row id, not
+	// timestamp: a prior run's last event can share the millisecond) — the prior
 	// runs also produced clone_restore_done events, and including those
 	// would double-count and inflate the parallelism factor.
-	probeStartMs := time.Now().UnixMilli()
+	probeAfter := lastEventID(t, env)
 	wallStart := time.Now()
 	o2 := harness.AssertOutcome(t, env.RunPrepare(t, cfg), "postgres", true)
 	wallMs := time.Since(wallStart).Milliseconds()
@@ -249,7 +264,7 @@ func TestPostgresFanoutConcurrency(t *testing.T) {
 	evs, err := env.Store.QueryEvents(env.Ctx, store.EventFilter{
 		WorktreeID: env.WTID,
 		EventTypes: []string{"clones:restore:end"},
-		SinceMs:    probeStartMs,
+		AfterID:    probeAfter,
 	})
 	if err != nil {
 		t.Fatalf("query events: %v", err)
