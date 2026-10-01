@@ -27,7 +27,7 @@
 
         treeman = pkgs.buildGoModule.override { go = pkgs.go_1_27; } {
           pname = "treeman";
-          version = "2.5.97";
+          version = "2.5.98";
           src = ./.;
           # buildGoModule fetches Go deps through the module proxy and
           # hashes the resulting vendor tree; `vendorHash` pins that
@@ -49,7 +49,7 @@
           ldflags = [
             "-s"
             "-w"
-            "-X github.com/stubbedev/treeman/internal/version.Version=2.5.97"
+            "-X github.com/stubbedev/treeman/internal/version.Version=2.5.98"
           ];
           doCheck = true;
         };
