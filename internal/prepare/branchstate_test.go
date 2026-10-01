@@ -938,3 +938,18 @@ func TestResumeMigrateAbortDoesNotReseed(t *testing.T) {
 		})
 	}
 }
+
+// TestCaptureSkipSurvivesNoopPrepare: a same-branch re-prepare (noop — a
+// re-finalize, a watcher re-prepare) with no writes must carry the clean
+// mirror forward, so the next switch away still skips its capture.
+func TestCaptureSkipSurvivesNoopPrepare(t *testing.T) {
+	f := newBSFixture(t)
+	f.set(f.active, map[string]string{"d": "1"})
+	f.run("develop") // adopt → clean
+	f.run("develop") // noop, no writes in between
+	c0 := f.fake.captureCalls
+	f.run("feature")
+	if f.fake.captureCalls != c0 {
+		t.Fatalf("noop must keep the clean mirror: captureCalls %d → %d", c0, f.fake.captureCalls)
+	}
+}

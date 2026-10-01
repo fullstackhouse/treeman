@@ -753,6 +753,9 @@ func runBranchScoped(ctx context.Context, a branchScopedArgs) (Outcome, error) {
 	case !exists:
 		// Fresh: nothing in the active slot. Seed this branch's data.
 		builtEmpty, decision, err = a.seedFresh(ctx, active, branch)
+		if err == nil {
+			err = a.markActive(ctx, active, branch)
+		}
 		if err != nil {
 			return Outcome{}, err
 		}
@@ -761,6 +764,9 @@ func runBranchScoped(ctx context.Context, a branchScopedArgs) (Outcome, error) {
 		// Active exists but treeman never recorded who owns it — adopt
 		// the current contents. (First-enable on a pre-existing DB.)
 		decision, err = a.adoptExisting(ctx, active, branch)
+		if err == nil {
+			err = a.markActive(ctx, active, branch)
+		}
 		if err != nil {
 			return Outcome{}, err
 		}
@@ -774,12 +780,10 @@ func runBranchScoped(ctx context.Context, a branchScopedArgs) (Outcome, error) {
 		}
 
 	default:
-		// old == branch: same branch already loaded. Nothing to swap.
+		// old == branch: same branch already loaded. Nothing to swap, and
+		// the marker already names it — rewriting it would reset the
+		// clean bit that recordClean carries forward on a noop.
 		decision = "noop"
-	}
-
-	if err := a.st.SetActiveBranch(ctx, a.repoID, a.worktreeID, active, branch, a.eng.engine); err != nil {
-		return Outcome{}, fmt.Errorf("record active-branch marker: %w", err)
 	}
 
 	migrated, builtEmpty, decision, err := a.migrateStep(ctx, active, branch, builtEmpty, decision)
@@ -1260,6 +1264,16 @@ func (a branchScopedArgs) parentSourceKeep(ctx context.Context, parent string) f
 func (a branchScopedArgs) repoPath(ctx context.Context) string {
 	p, _ := a.st.RepoPath(ctx, a.repoID)
 	return p
+}
+
+// markActive records `branch` as the owner of `active`. Seed and adopt
+// call it after filling; swapBranch advances the marker itself before
+// its fill (crash safety), and a noop already has it.
+func (a branchScopedArgs) markActive(ctx context.Context, active, branch string) error {
+	if err := a.st.SetActiveBranch(ctx, a.repoID, a.worktreeID, active, branch, a.eng.engine); err != nil {
+		return fmt.Errorf("record active-branch marker: %w", err)
+	}
+	return nil
 }
 
 // parentDB resolves the live database to seed `branch` from. Production
