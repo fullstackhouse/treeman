@@ -543,7 +543,9 @@ func runTaskWorktreeCreate(ctx context.Context, st *State, task rpc.Task) (json.
 		SkipPrepare: args.SkipPrepare,
 		Env:         task.InheritedEnv,
 	}
+	unmark := st.MarkCreateInFlight(req.RepoRoot)
 	res, needsFinalize, err := wt.CreateInStore(ctx, req, st.Store, nil)
+	unmark()
 	if err != nil {
 		return nil, err
 	}

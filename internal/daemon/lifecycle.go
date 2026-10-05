@@ -196,6 +196,16 @@ func (lw *LifecycleWatcher) onCreate(ctx context.Context, adminDir string) {
 		slog.Debug("lifecycle: skip setup (finalize already in flight)", "wt", wtPath)
 		return
 	}
+	// A daemon worktree_create for this repo is still between `git
+	// worktree add` and registering its row (a large checkout outlasts
+	// the debounce). Retry after another debounce instead of racing it:
+	// once the row lands, guard 1 skips; a genuinely external add is
+	// picked up as soon as the create finishes (#122).
+	if lw.st.IsCreateInFlight(lw.repoPath) {
+		slog.Debug("lifecycle: defer setup (create in flight)", "wt", wtPath)
+		lw.scheduleCreate(ctx, adminDir)
+		return
+	}
 
 	branch := detectBranch(wtPath)
 	sl := slug.For(wtPath, branch)

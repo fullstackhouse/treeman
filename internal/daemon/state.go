@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -77,9 +78,17 @@ type State struct {
 	// goroutine running for that path. Teardown calls CancelFinalize
 	// before its own work so a late-arriving prepare can't resurrect
 	// state (DB + registry row) after the worktree has been deleted.
+	//
+	// inFlightCreates counts worktree_create tasks per repo path that are
+	// between `git worktree add` and registering the row. The lifecycle
+	// watcher defers its CREATE handling while the count is non-zero, so
+	// a slow checkout (>debounce) can't let it register + finalize the
+	// worktree first with an empty env, starving prepare of the CLI's
+	// PATH (#122).
 	inFlightMu        sync.Mutex
 	inFlightTeardowns map[string]struct{}
 	inFlightFinalizes map[string]inFlightFinalize
+	inFlightCreates   map[string]int
 
 	// reapQueuesMu guards reapQueues. Each repo gets a single worker
 	// goroutine draining a buffered channel of trash paths — bursty
@@ -195,6 +204,7 @@ func NewState(bg context.Context, s *store.Store) *State {
 		prepareLks:        map[string]*sync.Mutex{},
 		inFlightTeardowns: map[string]struct{}{},
 		inFlightFinalizes: map[string]inFlightFinalize{},
+		inFlightCreates:   map[string]int{},
 		reapQueues:        map[string]chan string{},
 		dropQueues:        map[string]chan DBDropJob{},
 		syncBackoff:       map[string]time.Time{},
@@ -336,6 +346,31 @@ func (st *State) UnmarkFinalizeInFlight(wtPath string) {
 	st.inFlightMu.Lock()
 	delete(st.inFlightFinalizes, wtPath)
 	st.inFlightMu.Unlock()
+}
+
+// MarkCreateInFlight records that a worktree_create task is running
+// its git-front (git worktree add + registration) for repoPath. The
+// caller MUST invoke the returned func when that phase ends.
+func (st *State) MarkCreateInFlight(repoPath string) (unmark func()) {
+	key := filepath.Clean(repoPath)
+	st.inFlightMu.Lock()
+	st.inFlightCreates[key]++
+	st.inFlightMu.Unlock()
+	return func() {
+		st.inFlightMu.Lock()
+		if st.inFlightCreates[key]--; st.inFlightCreates[key] <= 0 {
+			delete(st.inFlightCreates, key)
+		}
+		st.inFlightMu.Unlock()
+	}
+}
+
+// IsCreateInFlight reports whether any worktree_create task is in its
+// git-front for repoPath.
+func (st *State) IsCreateInFlight(repoPath string) bool {
+	st.inFlightMu.Lock()
+	defer st.inFlightMu.Unlock()
+	return st.inFlightCreates[filepath.Clean(repoPath)] > 0
 }
 
 // IsFinalizeInFlight reports whether a FinalizeWorktree is
