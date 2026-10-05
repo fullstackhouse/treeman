@@ -694,6 +694,9 @@ type branchScopedArgs struct {
 	// store base-branch resolver. Only tests set it; production leaves it
 	// nil so `fill` uses resolveBaseSourceDB.
 	resolveParent func(ctx context.Context, branch string) (string, bool, error)
+	// resolveMainFn, when non-nil, overrides the main-worktree last-resort
+	// seed resolver (mainWorktreeBaseDB). Only tests set it.
+	resolveMainFn func(ctx context.Context, branch string) (string, bool, error)
 	// resolveBaseBranchFn, when non-nil, overrides the git base-branch
 	// resolver used by the durable-snapshot seed fallback. Only tests set
 	// it; production leaves it nil so `baseBranchDurable` uses
@@ -989,7 +992,8 @@ func (a branchScopedArgs) recordClean(ctx context.Context, active, branch, decis
 // fill populates `active` with `branch`'s data. Order: the branch's own
 // durable copy (resume) → the base branch's live namespace (seed from the
 // upstream checkout) → the base branch's freshest durable SNAPSHOT (seed
-// from a parked base, e.g. `develop` that lives only as a ref). Returns
+// from a parked base, e.g. `develop` that lives only as a ref) → the main
+// worktree's live namespace (parent-main; branch-agnostic last resort). Returns
 // (filled, how) — filled=false means no source was available and the
 // caller decides the fallback (empty). useDurable=false skips the resume
 // source (see reseedPastDurable).
@@ -1022,6 +1026,18 @@ func (a branchScopedArgs) fill(ctx context.Context, active, branch string, useDu
 				active, base, snap, err)
 		}
 		return true, "parent-snapshot", nil
+	}
+	// Last resort: the main worktree's live DB. It holds whatever branch
+	// the repo root is on, so it ranks below the base's own snapshot.
+	if mainDB, ok, err := a.mainFallbackDB(ctx, branch); err != nil {
+		return false, "", err
+	} else if ok && mainDB != "" && mainDB != active {
+		if pe, _ := a.eng.drv.Exists(ctx, mainDB); pe {
+			if err := a.seedParentVerified(ctx, mainDB, active); err != nil {
+				return false, "", err
+			}
+			return true, "parent-main", nil
+		}
 	}
 	return false, "", nil
 }
@@ -1284,6 +1300,20 @@ func (a branchScopedArgs) parentDB(ctx context.Context, branch string) (string, 
 		return a.resolveParent(ctx, branch)
 	}
 	return resolveBaseSourceDB(ctx, a.st, a.cfg, a.repoPath(ctx), a.repoID, a.dbIdx, a.eng.scope, branch)
+}
+
+// mainFallbackDB resolves the main worktree's live database as fill's
+// last-resort seed source. Tests that inject resolveParent own the
+// whole live-source resolution, so the production fallback is skipped
+// for them unless resolveMainFn is also set.
+func (a branchScopedArgs) mainFallbackDB(ctx context.Context, branch string) (string, bool, error) {
+	if a.resolveMainFn != nil {
+		return a.resolveMainFn(ctx, branch)
+	}
+	if a.resolveParent != nil {
+		return "", false, nil
+	}
+	return mainWorktreeBaseDB(ctx, a.st, a.cfg, a.repoPath(ctx), a.repoID, a.dbIdx, a.eng.scope, branch)
 }
 
 // migrateStep runs the branch_scoped migrate when migrateNeeded says so

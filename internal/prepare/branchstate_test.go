@@ -136,7 +136,9 @@ type bsFixture struct {
 	worktreeID   int64
 	active       string
 	parent       func(branch string) (string, bool, error)
-	baseBranch   func(branch string) string
+	// mainDB stands in for the main-worktree last-resort seed resolver.
+	mainDB     func(branch string) (string, bool, error)
+	baseBranch func(branch string) string
 	// defaultBranch stands in for origin/HEAD resolution (no git repo in
 	// these fixtures). Only read when the worktree row is the main one.
 	defaultBranch func() string
@@ -201,6 +203,10 @@ func (f *bsFixture) runErr(branch string) (Outcome, error) {
 	if f.parent != nil {
 		rp = func(_ context.Context, b string) (string, bool, error) { return f.parent(b) }
 	}
+	var rm func(ctx context.Context, branch string) (string, bool, error)
+	if f.mainDB != nil {
+		rm = func(_ context.Context, b string) (string, bool, error) { return f.mainDB(b) }
+	}
 	var rbb func(ctx context.Context, branch string) string
 	if f.baseBranch != nil {
 		rbb = func(_ context.Context, b string) string { return f.baseBranch(b) }
@@ -212,7 +218,7 @@ func (f *bsFixture) runErr(branch string) (Outcome, error) {
 	out, err := runBranchScoped(ctx, branchScopedArgs{
 		cfg: f.cfg, d: f.d, dbIdx: 0, worktreePath: f.worktreePath,
 		st: f.st, repoID: f.repoID, worktreeID: f.worktreeID,
-		eng: f.eng, resolveParent: rp, resolveBaseBranchFn: rbb,
+		eng: f.eng, resolveParent: rp, resolveMainFn: rm, resolveBaseBranchFn: rbb,
 		resolveDefaultBranchFn: rdb, migrateFP: f.migrateFP, migrateFn: f.migrateFn,
 	})
 	return out, err
@@ -325,6 +331,53 @@ func TestBranchScopedSeedsFromBaseDurable(t *testing.T) {
 	}
 	f.assertActive("dev") // seeded from develop's snapshot
 	f.assertMarker("feature/x")
+}
+
+// TestBranchScopedSwapPrefersBaseDurableOverMainDB is #120: a worktree
+// on develop switches to a feature branch cut off develop. develop is
+// now checked out nowhere, so no LIVE base DB exists — but develop's
+// data was just captured into its durable copy. The feature branch must
+// seed from that copy, not from the main worktree's DB (which holds
+// whatever branch the repo root is on).
+func TestBranchScopedSwapPrefersBaseDurableOverMainDB(t *testing.T) {
+	f := newBSFixture(t)
+	f.set("kontainer", map[string]string{"root": "1"})
+	f.parent = func(string) (string, bool, error) { return "", false, nil }
+	f.baseBranch = func(b string) string {
+		if b == "feature/x" {
+			return "develop"
+		}
+		return ""
+	}
+
+	f.run("develop")
+	f.write(f.active, "automation", "44")
+	// The repo root sits on an unrelated branch; its DB must not win.
+	f.mainDB = func(string) (string, bool, error) { return "kontainer", true, nil }
+
+	out := f.run("feature/x")
+	if out.Decision != "swap:parent-snapshot" {
+		t.Fatalf("decision = %q, want swap:parent-snapshot", out.Decision)
+	}
+	f.assertActive("automation") // develop's data, not the root DB's
+	f.assertMarker("feature/x")
+}
+
+// TestBranchScopedSeedsFromMainAsLastResort: no own durable, no live
+// base, no base snapshot — the main worktree's DB still beats an empty
+// schema.
+func TestBranchScopedSeedsFromMainAsLastResort(t *testing.T) {
+	f := newBSFixture(t)
+	f.set("kontainer", map[string]string{"root": "1"})
+	f.parent = func(string) (string, bool, error) { return "", false, nil }
+	f.mainDB = func(string) (string, bool, error) { return "kontainer", true, nil }
+	f.baseBranch = func(string) string { return "develop" }
+
+	out := f.run("feature/x")
+	if out.Decision != "seed:parent-main" {
+		t.Fatalf("decision = %q, want seed:parent-main", out.Decision)
+	}
+	f.assertActive("root")
 }
 
 // TestBranchScopedSeedsFromDeletedWorktreeDurable: the base branch's

@@ -237,7 +237,8 @@ type Outcome struct {
 	// Decision is set only for branch_scoped databases: how the active
 	// namespace was filled this run — `seed:empty`, `seed:dump`,
 	// `seed:parent`, `seed:parent-snapshot`, `swap:resume`, `swap:parent`,
-	// `swap:parent-snapshot`, `swap:branch-point`, `adopt`,
+	// `swap:parent-snapshot`, `seed:parent-main`, `swap:parent-main`,
+	// `swap:branch-point`, `adopt`,
 	// `adopt:<default-branch>` (main checkout's first durable copy, see
 	// adoptBranch), or `noop`.
 	// Empty for the template/clone path.

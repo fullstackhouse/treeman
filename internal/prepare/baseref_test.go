@@ -233,14 +233,14 @@ func TestResolveBaseBranch_FallsBackWhenUpstreamIsSelf(t *testing.T) {
 	}
 }
 
-// TestResolveBaseSourceDB_FallsBackToMainWhenBaseNotCheckedOut covers the
+// TestMainWorktreeBaseDB_FallbackWhenBaseNotCheckedOut covers the
 // dev-box layout where the repo root is parked on an unrelated feature
 // branch and the resolved base (`develop`) exists only as a ref — checked
 // out in no worktree and not at the repo root. The branch_scoped app DB has
 // no `dump.path`, so without a fallback the new worktree cold-seeds an empty
 // schema. Since the new branch shares history with the main checkout's
 // branch, the branch-agnostic main DB (`kontainer`) is a valid seed.
-func TestResolveBaseSourceDB_FallsBackToMainWhenBaseNotCheckedOut(t *testing.T) {
+func TestMainWorktreeBaseDB_FallbackWhenBaseNotCheckedOut(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
@@ -282,20 +282,20 @@ func TestResolveBaseSourceDB_FallsBackToMainWhenBaseNotCheckedOut(t *testing.T) 
 		t.Fatalf("EnsureRepo: %v", err)
 	}
 
-	name, ok, err := resolveBaseSourceDB(ctx, st, cfg, repo, repoID, 0, scopeName, "feature/KON-1")
+	name, ok, err := mainWorktreeBaseDB(ctx, st, cfg, repo, repoID, 0, scopeName, "feature/KON-1")
 	if err != nil {
-		t.Fatalf("resolveBaseSourceDB: %v", err)
+		t.Fatalf("mainWorktreeBaseDB: %v", err)
 	}
 	if !ok || name != "kontainer" {
 		t.Fatalf("want main fallback seed 'kontainer', got (%q, %v)", name, ok)
 	}
 }
 
-// TestResolveBaseSourceDB_EmptyForOrphanWhenBaseNotCheckedOut guards the
+// TestMainWorktreeBaseDB_EmptyForOrphan guards the
 // fallback's shared-history check: an orphan branch with no common ancestor
 // with the main checkout must still resolve to no source (empty seed), never
 // inherit the main DB.
-func TestResolveBaseSourceDB_EmptyForOrphanWhenBaseNotCheckedOut(t *testing.T) {
+func TestMainWorktreeBaseDB_EmptyForOrphan(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
@@ -330,9 +330,9 @@ func TestResolveBaseSourceDB_EmptyForOrphanWhenBaseNotCheckedOut(t *testing.T) {
 		t.Fatalf("EnsureRepo: %v", err)
 	}
 
-	_, ok, err := resolveBaseSourceDB(ctx, st, cfg, repo, repoID, 0, scopeName, "orphan")
+	_, ok, err := mainWorktreeBaseDB(ctx, st, cfg, repo, repoID, 0, scopeName, "orphan")
 	if err != nil {
-		t.Fatalf("resolveBaseSourceDB: %v", err)
+		t.Fatalf("mainWorktreeBaseDB: %v", err)
 	}
 	if ok {
 		t.Fatalf("want no source for orphan branch, got a seed")
@@ -389,5 +389,58 @@ func TestResolveBaseBranch_PrefersRecordedBase(t *testing.T) {
 
 	if got := resolveBaseBranch(ctx, st, repo, 0, "feature/KON-2"); got != "develop" {
 		t.Fatalf("want develop (recorded base), got %q", got)
+	}
+}
+
+// TestResolveBaseBranchPrefersNearestForkPoint is #120: a feature branch
+// with no recorded base (it tracks its own remote) was cut off develop,
+// while the repo root sits on main. develop is checked out nowhere but
+// holds a durable copy. The base must resolve to develop, the branch it
+// was actually forked from, not the repo root's branch.
+func TestResolveBaseBranchPrefersNearestForkPoint(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	repo := t.TempDir()
+	gitRun(t, repo, "init", "-q", "-b", "main")
+	gitRun(t, repo, "config", "user.email", "t@t")
+	gitRun(t, repo, "config", "user.name", "t")
+	gitRun(t, repo, "commit", "-q", "--allow-empty", "-m", "v1")
+	gitRun(t, repo, "branch", "develop")
+	gitRun(t, repo, "checkout", "-q", "develop")
+	gitRun(t, repo, "commit", "-q", "--allow-empty", "-m", "dev-1")
+	gitRun(t, repo, "checkout", "-q", "-b", "feature/x")
+	gitRun(t, repo, "commit", "-q", "--allow-empty", "-m", "feat-1")
+	// A child of feature/x must never be picked as its parent.
+	gitRun(t, repo, "checkout", "-q", "-b", "feature/x-sub")
+	gitRun(t, repo, "commit", "-q", "--allow-empty", "-m", "sub-1")
+	gitRun(t, repo, "checkout", "-q", "main")
+
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "tm.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+	repoID, err := st.EnsureRepo(ctx, repo, "test-repo")
+	if err != nil {
+		t.Fatalf("EnsureRepo: %v", err)
+	}
+
+	// Without develop known to treeman, the repo root's branch is all
+	// there is.
+	if got := resolveBaseBranch(ctx, st, repo, repoID, "feature/x"); got != "main" {
+		t.Fatalf("base without candidates = %q, want main", got)
+	}
+
+	for _, b := range []string{"develop", "feature/x-sub"} {
+		if err := st.RecordBranchDurable(ctx, store.BranchDurableRow{
+			RepoID: repoID, Engine: "mysql", DBKey: "app", Branch: b, DurableName: "_tmbs_" + b,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := resolveBaseBranch(ctx, st, repo, repoID, "feature/x"); got != "develop" {
+		t.Fatalf("base = %q, want develop", got)
 	}
 }

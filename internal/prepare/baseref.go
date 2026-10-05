@@ -43,13 +43,15 @@ func baseBranchOf(ctx context.Context, repoRoot, branch string) string {
 //  1. Recorded base or tracked upstream (`baseBranchOf`). Hits for
 //     every branch treeman created, and for branches cut off a
 //     remote-tracking start point.
-//  2. Main-worktree branch + merge-base sanity. Hits when the
-//     feature branch has no upstream (cut from a local ref, GitFlow
-//     branch where `branch.<name>.merge` points back at itself, or a
-//     fresh `git worktree add -b X` without a start point). The main
-//     worktree's active branch is the canonical "parent" candidate;
-//     `git merge-base newBranch mainBranch` proves shared history
-//     before we seed from a potentially unrelated DB.
+//  2. Nearest fork point among known branches (`nearestBaseCandidate`).
+//     Hits when the feature branch has no upstream (cut from a local
+//     ref, GitFlow branch where `branch.<name>.merge` points back at
+//     itself, a fresh `git worktree add -b X` without a start point, or
+//     a pushed branch tracking its own remote). Candidates are the main
+//     worktree's branch, branches checked out in worktrees and branches
+//     with durable copies; the one sharing the newest merge-base wins,
+//     the main branch on a tie. Shared history is required, so an
+//     orphan branch never seeds from an unrelated DB.
 //
 // Main-wt lookup: prefer the enrolled `LookupMainWorktree` row
 // (`main_worktree.enabled: true` repos). Fall back to the repo
@@ -59,7 +61,7 @@ func baseBranchOf(ctx context.Context, repoRoot, branch string) string {
 // Issue #7 regression fix: GitFlow feature branches off `develop`
 // were getting `seed:empty` because their `branch.<name>.merge`
 // pointed at `develop` on the remote but the worktree's
-// `@{upstream}` was unset. The main-wt fallback fills that gap.
+// `@{upstream}` was unset. The tier-2 fallback fills that gap.
 func resolveBaseBranch(ctx context.Context, st *store.Store, repoRoot string, repoID int64, newBranch string) string {
 	// A pushed feature branch tracks its OWN remote (`git push -u`
 	// sets `@{upstream}` to `origin/<newBranch>`), so baseBranchOf
@@ -70,18 +72,87 @@ func resolveBaseBranch(ctx context.Context, st *store.Store, repoRoot string, re
 	if b := baseBranchOf(ctx, repoRoot, newBranch); b != "" && b != newBranch {
 		return b
 	}
-	mainBranch := lookupMainBranch(ctx, st, repoRoot, repoID)
-	if mainBranch == "" || mainBranch == newBranch {
+	return nearestBaseCandidate(ctx, repoRoot, newBranch, baseCandidates(ctx, st, repoRoot, repoID))
+}
+
+// baseCandidates lists the local branches that could be newBranch's
+// parent when git doesn't record one: the main worktree's branch first
+// (it wins ties), then every branch checked out in a live worktree or
+// holding a durable copy. The latter matter when the real parent (e.g.
+// `develop`) is parked: a worktree that just switched develop → feature
+// has develop only as a durable copy, and the main checkout may sit on
+// an unrelated branch (#120).
+func baseCandidates(ctx context.Context, st *store.Store, repoRoot string, repoID int64) []string {
+	var out []string
+	seen := map[string]bool{}
+	add := func(b string, mustExist bool) {
+		if b == "" || seen[b] {
+			return
+		}
+		seen[b] = true
+		if mustExist && !gitcmd.Exists(ctx, repoRoot, "refs/heads/"+b) {
+			return
+		}
+		out = append(out, b)
+	}
+	add(lookupMainBranch(ctx, st, repoRoot, repoID), false)
+	if st == nil || repoID <= 0 {
+		return out
+	}
+	if rows, err := st.ListWorktreesForRepo(ctx, repoID); err == nil {
+		for _, w := range rows {
+			if !w.Deleted {
+				add(w.Branch, true)
+			}
+		}
+	}
+	if durs, err := st.ListBranchDurables(ctx, repoID); err == nil {
+		for _, d := range durs {
+			add(d.Branch, true)
+		}
+	}
+	return out
+}
+
+// nearestBaseCandidate picks the candidate newBranch most recently forked
+// from: the one whose merge-base with newBranch descends from every other
+// candidate's. Candidates with no shared history are skipped (never seed
+// an orphan branch from an unrelated DB), as are candidates that strictly
+// descend from newBranch — those are its children, not its parent. Ties
+// (same or unordered fork points) keep the earlier candidate, so the main
+// worktree's branch wins when nothing is provably closer.
+func nearestBaseCandidate(ctx context.Context, repoRoot, newBranch string, candidates []string) string {
+	tip, err := gitcmd.String(ctx, repoRoot, "rev-parse", "--verify", "--quiet", newBranch+"^{commit}")
+	if err != nil || tip == "" {
 		return ""
 	}
-	// Shared history check — without it we'd happily seed an
-	// orphan branch from an unrelated DB. `git merge-base` returns
-	// non-empty stdout + exit 0 iff a common ancestor exists.
-	mb, err := gitcmd.String(ctx, repoRoot, "merge-base", newBranch, mainBranch)
-	if err != nil || strings.TrimSpace(mb) == "" {
-		return ""
+	best, bestMB := "", ""
+	for _, c := range candidates {
+		if c == newBranch {
+			continue
+		}
+		mb, err := gitcmd.String(ctx, repoRoot, "merge-base", newBranch, c)
+		if err != nil || mb == "" {
+			continue
+		}
+		if mb == tip {
+			if ctip, _ := gitcmd.String(ctx, repoRoot, "rev-parse", "--verify", "--quiet", c+"^{commit}"); ctip != tip {
+				continue
+			}
+		}
+		if best == "" {
+			best, bestMB = c, mb
+			continue
+		}
+		if mb == bestMB {
+			continue
+		}
+		// `merge-base --is-ancestor A B` exits 0 iff A is an ancestor of B.
+		if _, err := gitcmd.Output(ctx, repoRoot, "merge-base", "--is-ancestor", bestMB, mb); err == nil {
+			best, bestMB = c, mb
+		}
 	}
-	return mainBranch
+	return best
 }
 
 // lookupMainBranch returns the local branch the main worktree is
@@ -131,8 +202,10 @@ func stripRemotePrefix(ctx context.Context, repoRoot, ref string) string {
 // from when seeding `databases[dbIdx]` for a new worktree on
 // `newBranch`. Reports (name, true, nil) when the base branch is
 // checked out somewhere treeman can find — a tracked worktree or the
-// repo-root checkout — and ("", false, nil) when it isn't (caller
-// falls back to `dump.path`).
+// repo-root checkout — and ("", false, nil) when it isn't. It never
+// substitutes a different branch's DB: when the base is parked (only a
+// ref), its durable snapshot is the right seed, and the caller tries
+// that before the mainWorktreeBaseDB last resort (#120).
 //
 // Name rendering follows where the base lives:
 //   - tracked main worktree (is_main row) OR the repo-root checkout
@@ -154,48 +227,45 @@ func resolveBaseSourceDB(
 	newBranch string,
 ) (string, bool, error) {
 	baseBranch := resolveBaseBranch(ctx, st, repoRoot, repoID, newBranch)
-	if baseBranch != "" {
-		rows, err := st.ListWorktreesForRepo(ctx, repoID)
-		if err != nil {
-			return "", false, err
+	if baseBranch == "" {
+		return "", false, nil
+	}
+	rows, err := st.ListWorktreesForRepo(ctx, repoID)
+	if err != nil {
+		return "", false, err
+	}
+	for _, w := range rows {
+		if w.Deleted || w.Branch != baseBranch {
+			continue
 		}
-		for _, w := range rows {
-			if w.Deleted || w.Branch != baseBranch {
-				continue
-			}
-			if w.IsMain {
-				return renderMainBaseDB(cfg, dbIdx, scope, w.Path, baseBranch)
-			}
-			// A linked worktree's active namespace is branch-independent —
-			// keyed off its path, not its stored (branch-derived) slug.
-			return renderWorktreeBaseDB(cfg, dbIdx, scope, slug.For(w.Path, ""))
+		if w.IsMain {
+			return renderMainBaseDB(cfg, dbIdx, scope, w.Path, baseBranch)
 		}
-
-		// Base branch not in any tracked worktree row — is the repo root
-		// itself on it? (The common case: develop sits at the repo root,
-		// not enrolled as a treeman main worktree.)
-		if cur, _ := gitcmd.String(ctx, repoRoot, "rev-parse", "--abbrev-ref", "HEAD"); cur == baseBranch {
-			return renderMainBaseDB(cfg, dbIdx, scope, repoRoot, baseBranch)
-		}
+		// A linked worktree's active namespace is branch-independent —
+		// keyed off its path, not its stored (branch-derived) slug.
+		return renderWorktreeBaseDB(cfg, dbIdx, scope, slug.For(w.Path, ""))
 	}
 
-	// The resolved base branch is not checked out in any worktree or at the
-	// repo root — the common case being a dev box whose repo root is parked
-	// on some other feature branch while the real base (e.g. `develop`)
-	// exists only as a ref. The main worktree's branch-scoped name is bare
-	// (no `{slug}`), so its live DB is branch-agnostic and a valid seed for
-	// any branch that shares history with it. Fall back to it instead of
-	// cold-seeding an empty schema (the branch_scoped app DB has no
-	// `dump.path`, so "no source" otherwise means "empty database").
-	return mainWorktreeBaseDB(ctx, st, cfg, repoRoot, repoID, dbIdx, scope, newBranch)
+	// Base branch not in any tracked worktree row — is the repo root
+	// itself on it? (The common case: develop sits at the repo root,
+	// not enrolled as a treeman main worktree.)
+	if cur, _ := gitcmd.String(ctx, repoRoot, "rev-parse", "--abbrev-ref", "HEAD"); cur == baseBranch {
+		return renderMainBaseDB(cfg, dbIdx, scope, repoRoot, baseBranch)
+	}
+	return "", false, nil
 }
 
 // mainWorktreeBaseDB resolves the main worktree's active database for
 // databases[dbIdx] as a last-resort seed source for newBranch, gated on
-// shared git history. It backstops resolveBaseSourceDB when the resolved
-// base branch is not independently checked out anywhere treeman can read
-// its DB. Returns ("", false, nil) when there is no usable main worktree or
-// the branches are unrelated, leaving the caller to fall through to
+// shared git history. The common case is a dev box whose repo root is
+// parked on some other branch while the real base (e.g. `develop`)
+// exists only as a ref and has no durable snapshot either. The main
+// worktree's branch-scoped name is bare (no `{slug}`), so its live DB is
+// branch-agnostic and beats cold-seeding an empty schema (the
+// branch_scoped app DB has no `dump.path`). It must rank BELOW the base
+// branch's durable snapshot: the main DB holds whatever branch the repo
+// root is on, not the base's data (#120). Returns ("", false, nil) when
+// there is no usable main worktree or the branches are unrelated, leaving the caller to fall through to
 // `dump.path` (or an empty seed when none is configured).
 func mainWorktreeBaseDB(
 	ctx context.Context,
