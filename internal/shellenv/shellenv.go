@@ -21,7 +21,10 @@
 //     dirs (e.g. ~/.nix-profile/bin), so a hook like `composer install`
 //     fails with `env: 'php': No such file or directory`. The user's
 //     real login shell always has those dirs; merging them in closes
-//     the gap for every code path.
+//     the gap for every code path. With an inherited PATH the login
+//     dirs are appended (the user's live session wins); without one
+//     they LEAD the daemon floor, so a stale /usr/local/bin tool can't
+//     shadow the profile bin the user's terminal would resolve (#121).
 package shellenv
 
 import (
@@ -46,18 +49,60 @@ func BaseEnv(inheritedEnv map[string]string) map[string]string {
 			merged[k] = v
 		}
 	}
+	daemonPATH := merged["PATH"]
 	maps.Copy(merged, inheritedEnv)
-	merged["PATH"] = MergePaths(merged["PATH"], LoginShellPATH())
+	if p := inheritedEnv["PATH"]; p != "" {
+		merged["PATH"] = MergePaths(p, LoginShellPATH())
+	} else {
+		merged["PATH"] = MergePaths(LoginShellPATH(), daemonPATH)
+	}
 	return merged
 }
 
 // LoginShellPATH returns the PATH a fresh login shell of the user
-// running treemand would have. The result is cached: the daemon's
-// owning user and their shell config don't change over its lifetime,
-// and spawning a shell per call is wasteful. Best-effort — returns ""
-// on any failure, in which case MergePaths leaves the existing PATH
-// untouched.
-var LoginShellPATH = sync.OnceValue(func() string {
+// running treemand would have. Best-effort — returns "" on failure, in
+// which case MergePaths leaves the existing PATH untouched.
+//
+// Only a successful probe is cached: the daemon's owning user and their
+// shell config don't change over its lifetime, and spawning a shell per
+// call is wasteful. A failed probe is NOT cached (#121) — at daemon
+// start under systemd the profile (nix, …) may not be ready yet, and
+// caching that "" starved every hook of the user's bin dirs until the
+// daemon restarted. Failures are retried at most once per
+// loginProbeRetry so a permanently broken rc file can't add a shell
+// spawn (up to the probe timeout) to every hook.
+var LoginShellPATH = cachedLoginShellPATH
+
+// loginProbe is the uncached probe; a var so tests can stub it.
+var loginProbe = probeLoginShellPATH
+
+const loginProbeRetry = 30 * time.Second
+
+var loginPATH struct {
+	mu         sync.Mutex
+	value      string
+	lastFailed time.Time
+}
+
+func cachedLoginShellPATH() string {
+	loginPATH.mu.Lock()
+	defer loginPATH.mu.Unlock()
+	if loginPATH.value != "" {
+		return loginPATH.value
+	}
+	if !loginPATH.lastFailed.IsZero() && time.Since(loginPATH.lastFailed) < loginProbeRetry {
+		return ""
+	}
+	p := loginProbe()
+	if p == "" {
+		loginPATH.lastFailed = time.Now()
+		return ""
+	}
+	loginPATH.value = p
+	return p
+}
+
+func probeLoginShellPATH() string {
 	// Bound the shell probes — an interactive shell with a broken rc
 	// file could otherwise hang the daemon.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -75,19 +120,22 @@ var LoginShellPATH = sync.OnceValue(func() string {
 	// To capture the superset, probe an interactive login shell first
 	// (`-ilc`), then fall back to flag sets that pickier shells accept.
 	// `printf %s "$PATH"` keeps stdout clean of any rc-file noise.
+	var lastErr error
 	for _, flags := range [][]string{{"-ilc"}, {"-lc"}, {"-ic"}, {"-c"}} {
 		args := append(append([]string{}, flags...), `printf %s "$PATH"`)
 		out, err := exec.CommandContext(ctx, shell, args...).Output()
 		if err != nil {
+			lastErr = err
 			continue
 		}
 		if p := strings.TrimSpace(string(out)); p != "" {
 			return p
 		}
 	}
-	slog.Debug("shellenv: login-shell PATH probe failed", "shell", shell)
+	slog.Warn("shellenv: login-shell PATH probe failed; hooks run without the user's profile PATH (will retry)",
+		"shell", shell, "err", lastErr)
 	return ""
-})
+}
 
 // userLoginShell resolves the login shell of the user running this
 // process. It reads /etc/passwd via `getent` (authoritative even under
