@@ -7,6 +7,14 @@
 #
 # None of this proves upstream code is benign — Scorecard measures practices,
 # not intent. It is a prior and a drift detector, not a verdict. See FORK.md.
+#
+# Every job runs under Harden-Runner in `block` mode with its own allowlist,
+# harvested from the audit-mode run of 2026-10-08 (the audit logs name every
+# endpoint and the process that called it, so no dashboard is needed). Runner
+# and Actions-cache infrastructure is allowed implicitly by the agent and is
+# deliberately not listed — those hostnames are region- and shard-specific and
+# would rot. When a job legitimately needs a new endpoint it fails with the
+# blocked hostname in its log; add it here, in a commit that says why.
 name: fsh vet
 
 on:
@@ -34,7 +42,9 @@ jobs:
     steps:
       - uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >
+            github.com:443
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
@@ -67,7 +77,15 @@ jobs:
     steps:
       - uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >
+            api.github.com:443
+            api.osv.dev:443
+            github.com:443
+            proxy.golang.org:443
+            release-assets.githubusercontent.com:443
+            storage.googleapis.com:443
+            sum.golang.org:443
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
@@ -95,7 +113,19 @@ jobs:
     steps:
       - uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >
+            api.deps.dev:443
+            api.github.com:443
+            api.osv.dev:443
+            codeload.github.com:443
+            github.com:443
+            oss-fuzz-build-logs.storage.googleapis.com:443
+            proxy.golang.org:443
+            release-assets.githubusercontent.com:443
+            storage.googleapis.com:443
+            sum.golang.org:443
+            www.bestpractices.dev:443
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
@@ -126,7 +156,16 @@ jobs:
     steps:
       - uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >
+            api.deps.dev:443
+            api.github.com:443
+            api.osv.dev:443
+            codeload.github.com:443
+            github.com:443
+            oss-fuzz-build-logs.storage.googleapis.com:443
+            release-assets.githubusercontent.com:443
+            www.bestpractices.dev:443
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
