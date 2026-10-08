@@ -15,6 +15,15 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
         php: ['8.1', '8.5']
+        # setup-php cannot install PHP 8.5 on macOS runners (brew install
+        # fails silently on both macos-15 and macos-26 as of 2026-10-08);
+        # cover the newest working minor there, 8.5 stays on Linux.
+        exclude:
+          - os: macos-latest
+            php: '8.5'
+        include:
+          - os: macos-latest
+            php: '8.4'
     steps:
       - uses: actions/checkout@v7
       - uses: shivammathur/setup-php@v2
