@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/bmatcuk/doublestar/v4"
 
@@ -139,12 +141,14 @@ func CreateInStore(ctx context.Context, req CreateRequest, st *store.Store, sink
 			sink.Info("worktree already exists at %s on %s — no-op", wtPath, req.Branch)
 			return CreateResult{WtPath: wtPath, Status: CreatedNoop}, false, nil
 		}
-		if !gitenv.IsGitWorktree(wtPath) {
+		switch {
+		case gitenv.IsGitWorktree(wtPath):
+			return CreateResult{}, false, fmt.Errorf("destination path already exists: %s", wtPath)
+		case !moveAsideDirOnlyLeftover(WorktreesRoot(cfg, req.RepoRoot), wtPath, sink):
 			return CreateResult{}, false, fmt.Errorf(
 				"destination %s exists but is not a git worktree (leftover from an earlier teardown?) "+
 					"— move it aside or remove it, then re-run", wtPath)
 		}
-		return CreateResult{}, false, fmt.Errorf("destination path already exists: %s", wtPath)
 	}
 	if err := os.MkdirAll(filepath.Dir(wtPath), 0o755); err != nil {
 		return CreateResult{}, false, err
@@ -451,4 +455,58 @@ func applyPatches(ctx context.Context, patches []config.Patch, wtPath string, tp
 		}
 	}
 	return nil
+}
+
+// TrashDirName is the subdirectory under the worktrees root where
+// removed working trees are renamed for background reaping (the daemon
+// drains it, and sweeps leftovers on boot).
+const TrashDirName = ".treeman-trash"
+
+// moveAsideDirOnlyLeftover renames a stale, directories-only tree at
+// wtPath into the worktrees-root trash so a create can proceed, and
+// reports whether it did.
+//
+// The case it exists for: a long-lived container (restart policy
+// unless-stopped) bind-mounts a path inside a worktree that has since
+// been torn down. On its next restart Docker recreates every missing
+// bind source as an empty, root-owned directory, resurrecting
+// <worktree>/docker/mysql/conf.d — which the user cannot rm -rf, and
+// which blocks the next create at that path. A rename only needs write
+// access on the (user-owned) parent, so it succeeds regardless of the
+// contents' owner.
+//
+// Only a tree holding nothing but directories qualifies: any file at
+// all means it might be real work, and the caller keeps refusing.
+func moveAsideDirOnlyLeftover(worktreesRoot, wtPath string, sink Sink) bool {
+	if !underRoot(wtPath, worktreesRoot) || !onlyDirectories(wtPath) {
+		return false
+	}
+	trashRoot := filepath.Join(worktreesRoot, TrashDirName)
+	if err := os.MkdirAll(trashRoot, 0o700); err != nil {
+		return false
+	}
+	dest := filepath.Join(trashRoot, fmt.Sprintf("%d-%s", time.Now().UnixNano(), filepath.Base(wtPath)))
+	if err := os.Rename(wtPath, dest); err != nil {
+		return false
+	}
+	sink.Info("moved stale empty-dirs leftover at %s aside to %s (likely recreated by a container bind mount)", wtPath, dest)
+	return true
+}
+
+// onlyDirectories reports whether root is a directory whose whole tree
+// contains no non-directory entries. An unreadable subtree counts as
+// "no" so the caller errs on the side of not touching it.
+func onlyDirectories(root string) bool {
+	clean := true
+	err := filepath.WalkDir(root, func(_ string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() {
+			clean = false
+			return fs.SkipAll
+		}
+		return nil
+	})
+	return err == nil && clean
 }
