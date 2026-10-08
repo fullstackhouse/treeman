@@ -1,0 +1,28 @@
+{
+  "_comment": "Baseline OpenSSF Scorecard result for stubbedev/treeman, the upstream we merge from. fsh-vet.yml re-scores upstream and fails if any check REGRESSES against this file. Regenerate deliberately (fsh-vet writes the new JSON to the job summary) and say why in the PR.",
+  "repo": "github.com/stubbedev/treeman",
+  "commit": "55dcdd5f6c0d759ac70d551a408d1b53a18b1e18",
+  "scorecard_version": "v5.5.0",
+  "date": "2026-10-08T12:26:37+02:00",
+  "aggregate": 3.3,
+  "checks": {
+    "Binary-Artifacts": 9,
+    "Branch-Protection": 0,
+    "CI-Tests": -1,
+    "CII-Best-Practices": 0,
+    "Code-Review": 0,
+    "Contributors": 0,
+    "Dangerous-Workflow": 10,
+    "Dependency-Update-Tool": 0,
+    "Fuzzing": 10,
+    "License": 10,
+    "Maintained": 10,
+    "Packaging": -1,
+    "Pinned-Dependencies": 0,
+    "SAST": 0,
+    "Security-Policy": 0,
+    "Signed-Releases": 0,
+    "Token-Permissions": 0,
+    "Vulnerabilities": 0
+  }
+}

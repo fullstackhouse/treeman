@@ -62,6 +62,44 @@ Planned, not yet written:
 | `FORK.md` | this file |
 | `.github/workflows/fsh-release.yml` | builds four platforms from source, tests, attests, publishes a release **in this repo** |
 | `.github/workflows/fsh-sync.yml` | nightly: fast-forwards `master` from upstream and opens a PR merging it into `fsh` |
+| `.github/workflows/fsh-vet.yml` | vets what we are about to build — see [Vetting](#vetting) |
+| `.fsh/upstream-scorecard.json` | baseline OpenSSF Scorecard result for upstream; the drift check compares against it |
+| `.fsh/compare-scorecard.py` | the comparison, failing the job on a regression |
+
+## Vetting
+
+We don't read 65k lines of someone else's Go on every sync, and pretending otherwise would just
+produce a gate we click through. `fsh-vet.yml` answers three questions mechanically instead, with
+tooling that is **free for public repos** — which is the reason this fork is public:
+
+| Question | How | Fails the build? |
+|---|---|---|
+| Is our fork still upstream + our own files? | `git diff` against the merge-base, allowlisted paths | yes |
+| Do the dependencies have known vulnerabilities? | `osv-scanner` on `go.mod` | yes |
+| Has upstream's hygiene regressed? | OpenSSF Scorecard vs `.fsh/upstream-scorecard.json` | yes, on any check that drops |
+| What did the build touch at runtime? | StepSecurity Harden-Runner, per-step network/process/file | not yet — `audit` mode |
+
+The baseline was taken 2026-10-08 at upstream `55dcdd5f`: **aggregate 3.3/10**, with `0` on
+Signed-Releases, Token-Permissions, Pinned-Dependencies, Branch-Protection, Code-Review (0 of 30
+changesets approved), Contributors and 24 known-vulnerable dependencies, against `10` on
+Dangerous-Workflow, Fuzzing, License and Maintained. Those zeroes are *why this fork builds from
+source* — they are not news, and the check does not fail on them. What it fails on is a **drop**:
+a `Dangerous-Workflow` or `Token-Permissions` regression is the shape a hostile change to upstream's
+release path would take.
+
+Two honest limits, so nobody mistakes a green run for an audit:
+
+- **Scorecard measures practices, not intent.** 3.3/10 means an attack on this project would not
+  have to work hard; it does not mean the code is bad. A well-run project can still ship malware —
+  xz scored well.
+- **Nobody else is finding upstream's bugs.** 90 release-tarball downloads across 161 releases and
+  no external issue has ever been filed. Reputation-based tooling has nothing to go on here, so the
+  controls that actually bound our risk are operational, not analytical: a non-superuser role
+  scoped to our database prefix, a scrubbed env at the call site, `--no-daemon`, local hosts only.
+
+Harden-Runner starts in `audit` because a wrong allowlist breaks the release. Once a few runs have
+reported the real endpoint set, flip it to `block` — at which point a dependency or an upstream
+commit that phones home during `go build` fails the release instead of shipping.
 
 ## Installing our build
 
