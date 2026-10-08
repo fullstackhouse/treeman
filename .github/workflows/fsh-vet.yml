@@ -59,8 +59,9 @@ jobs:
           fi
           echo "additive-only: OK — $(git diff --name-only "$base"..HEAD | wc -l) file(s), all ours"
 
-  # Known vulnerabilities in upstream's 30 direct dependencies. Scorecard counts
-  # them; this names them.
+  # Known vulnerabilities in upstream's dependencies. Scorecard counts them;
+  # this names them, and fails only on ones that are NEW since the baseline —
+  # upstream ships 40 today and a permanently red check is a check we ignore.
   deps:
     runs-on: ubuntu-latest
     steps:
@@ -68,11 +69,23 @@ jobs:
         with:
           egress-policy: audit
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: google/osv-scanner-action@a345acffa64b0eaede81a3d9aae6141214d9c8fc # v2.6.0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
-          scan-args: |-
-            --lockfile=go.mod
-            --format=table
+          go-version-file: go.mod
+
+      - name: Install osv-scanner (pinned, built from source)
+        # Built here rather than taken from a release, for the same reason this
+        # fork exists at all. go.sum verification covers its own dependencies.
+        run: go install github.com/google/osv-scanner/v2/cmd/osv-scanner@e840a6e8adb14b7777c78e26cfbf6e2abc1d1fc6 # v2.6.0
+
+      - name: Scan and compare against the baseline
+        run: |
+          set -euo pipefail
+          # osv-scanner exits non-zero when it finds anything, which it always
+          # will; the verdict is the comparison, not its exit code.
+          osv-scanner scan source --lockfile=go.mod --format=json > /tmp/osv.json || true
+          python3 .fsh/osv.py compare .fsh/upstream-osv.json /tmp/osv.json \
+            >> "$GITHUB_STEP_SUMMARY"
 
   # Has upstream's hygiene regressed since we last looked? A drop in
   # Token-Permissions, Dangerous-Workflow or Pinned-Dependencies is exactly the

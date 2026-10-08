@@ -1,0 +1,246 @@
+{
+  "_comment": "Known-vulnerable dependencies at the time of baselining. fsh-vet.yml fails only on advisories NOT listed here. Re-baseline deliberately, in the PR that accepts the new advisory, and say why in the body.",
+  "count": 40,
+  "findings": {
+    "github.com/klauspost/compress:GO-2026-5841": {
+      "package": "github.com/klauspost/compress",
+      "version": "1.18.6",
+      "id": "GO-2026-5841",
+      "summary": "OOB read in github.com/klauspost/compress/s2"
+    },
+    "golang.org/x/crypto:GHSA-45gg-vh54-h5m9": {
+      "package": "golang.org/x/crypto",
+      "version": "0.33.0",
+      "id": "GHSA-45gg-vh54-h5m9",
+      "summary": "golang.org/x/crypto vulnerable to invoking bypass of certificate restrictions"
+    },
+    "golang.org/x/crypto:GHSA-5cgq-3rg8-m6cv": {
+      "package": "golang.org/x/crypto",
+      "version": "0.33.0",
+      "id": "GHSA-5cgq-3rg8-m6cv",
+      "summary": "golang.org/x/crypto vulnerable to auth bypass via unenforced @revoked status"
+    },
+    "golang.org/x/crypto:GHSA-78mq-xcr3-xm33": {
+      "package": "golang.org/x/crypto",
+      "version": "0.33.0",
+      "id": "GHSA-78mq-xcr3-xm33",
+      "summary": "golang.org/x/crypto is vulnerable to invoking server panic during CheckHostKey/Authenticate flow"
+    },
+    "golang.org/x/crypto:GHSA-89gr-r52h-f8rx": {
+      "package": "golang.org/x/crypto",
+      "version": "0.33.0",
+      "id": "GHSA-89gr-r52h-f8rx",
+      "summary": "golang.org/x/crypto: FIDO/U2F security key physical presence check can be bypassed"
+    },
+    "golang.org/x/crypto:GHSA-9m57-25v3-79x9": {
+      "package": "golang.org/x/crypto",
+      "version": "0.33.0",
+      "id": "GHSA-9m57-25v3-79x9",
+      "summary": "golang.org/x/crypto: Invoking pathological inputs can lead to client panic"
+    },
+    "golang.org/x/crypto:GHSA-f5wc-c3c7-36mc": {
+      "package": "golang.org/x/crypto",
+      "version": "0.33.0",
+      "id": "GHSA-f5wc-c3c7-36mc",
+      "summary": "golang.org/x/crypto doesn't drop invoking agent constraints when forwarding keys"
+    },
+    "golang.org/x/crypto:GHSA-f6x5-jh6r-wrfv": {
+      "package": "golang.org/x/crypto",
+      "version": "0.33.0",
+      "id": "GHSA-f6x5-jh6r-wrfv",
+      "summary": "golang.org/x/crypto/ssh/agent vulnerable to panic if message is malformed due to out of bounds read"
+    },
+    "golang.org/x/crypto:GHSA-hcg3-q754-cr77": {
+      "package": "golang.org/x/crypto",
+      "version": "0.33.0",
+      "id": "GHSA-hcg3-q754-cr77",
+      "summary": "golang.org/x/crypto Vulnerable to Denial of Service (DoS) via Slow or Incomplete Key Exchange"
+    },
+    "golang.org/x/crypto:GHSA-j5w8-q4qc-rx2x": {
+      "package": "golang.org/x/crypto",
+      "version": "0.33.0",
+      "id": "GHSA-j5w8-q4qc-rx2x",
+      "summary": "golang.org/x/crypto/ssh allows an attacker to cause unbounded memory consumption"
+    },
+    "golang.org/x/crypto:GHSA-jppx-rxg9-jmrx": {
+      "package": "golang.org/x/crypto",
+      "version": "0.33.0",
+      "id": "GHSA-jppx-rxg9-jmrx",
+      "summary": "golang.org/x/crypto doesn't enforce invoking key constraints"
+    },
+    "golang.org/x/crypto:GHSA-q4h4-gmj2-qvw2": {
+      "package": "golang.org/x/crypto",
+      "version": "0.33.0",
+      "id": "GHSA-q4h4-gmj2-qvw2",
+      "summary": "golang.org/x/crypto: Invoking byte arithmetic causes underflow and panic"
+    },
+    "golang.org/x/crypto:GHSA-qpw4-5x99-6vjp": {
+      "package": "golang.org/x/crypto",
+      "version": "0.33.0",
+      "id": "GHSA-qpw4-5x99-6vjp",
+      "summary": "golang.org/x/crypto: Invoking memory leak when rejecting channels can lead to DoS"
+    },
+    "golang.org/x/crypto:GHSA-rm3j-f69w-wqmq": {
+      "package": "golang.org/x/crypto",
+      "version": "0.33.0",
+      "id": "GHSA-rm3j-f69w-wqmq",
+      "summary": "golang.org/x/crypto vulnerable to infinite loop on large channel writes"
+    },
+    "golang.org/x/crypto:GHSA-vgwf-h737-ff37": {
+      "package": "golang.org/x/crypto",
+      "version": "0.33.0",
+      "id": "GHSA-vgwf-h737-ff37",
+      "summary": "golang.org/x/crypto: Invoking client can cause server deadlock on unexpected responses"
+    },
+    "golang.org/x/crypto:GHSA-w879-237q-wc7r": {
+      "package": "golang.org/x/crypto",
+      "version": "0.33.0",
+      "id": "GHSA-w879-237q-wc7r",
+      "summary": "golang.org/x/crypto: Invoking pathological RSA/DSA parameters may cause DoS"
+    },
+    "golang.org/x/crypto:GHSA-x527-x647-q7gg": {
+      "package": "golang.org/x/crypto",
+      "version": "0.33.0",
+      "id": "GHSA-x527-x647-q7gg",
+      "summary": "golang.org/x/crypto: Invoking VerifiedPublicKeyCallback permissions skip enforcement"
+    },
+    "golang.org/x/crypto:GO-2025-3487": {
+      "package": "golang.org/x/crypto",
+      "version": "0.33.0",
+      "id": "GO-2025-3487",
+      "summary": "Potential denial of service in golang.org/x/crypto"
+    },
+    "golang.org/x/crypto:GO-2025-4116": {
+      "package": "golang.org/x/crypto",
+      "version": "0.33.0",
+      "id": "GO-2025-4116",
+      "summary": "Potential denial of service in golang.org/x/crypto/ssh/agent"
+    },
+    "golang.org/x/crypto:GO-2025-4134": {
+      "package": "golang.org/x/crypto",
+      "version": "0.33.0",
+      "id": "GO-2025-4134",
+      "summary": "Unbounded memory consumption in golang.org/x/crypto/ssh"
+    },
+    "golang.org/x/crypto:GO-2025-4135": {
+      "package": "golang.org/x/crypto",
+      "version": "0.33.0",
+      "id": "GO-2025-4135",
+      "summary": "Malformed constraint may cause denial of service in golang.org/x/crypto/ssh/agent"
+    },
+    "golang.org/x/crypto:GO-2026-5005": {
+      "package": "golang.org/x/crypto",
+      "version": "0.33.0",
+      "id": "GO-2026-5005",
+      "summary": "Invoking key constraints not enforced in golang.org/x/crypto/ssh/agent"
+    },
+    "golang.org/x/crypto:GO-2026-5006": {
+      "package": "golang.org/x/crypto",
+      "version": "0.33.0",
+      "id": "GO-2026-5006",
+      "summary": "Invoking agent constraints dropped when forwarding keys in golang.org/x/crypto/ssh/agent"
+    },
+    "golang.org/x/crypto:GO-2026-5013": {
+      "package": "golang.org/x/crypto",
+      "version": "0.33.0",
+      "id": "GO-2026-5013",
+      "summary": "Invoking byte arithmetic causes underflow and panic in golang.org/x/crypto/ssh"
+    },
+    "golang.org/x/crypto:GO-2026-5014": {
+      "package": "golang.org/x/crypto",
+      "version": "0.33.0",
+      "id": "GO-2026-5014",
+      "summary": "Invoking bypass of certificate restrictions in golang.org/x/crypto/ssh"
+    },
+    "golang.org/x/crypto:GO-2026-5015": {
+      "package": "golang.org/x/crypto",
+      "version": "0.33.0",
+      "id": "GO-2026-5015",
+      "summary": "Invoking server panic during CheckHostKey/Authenticate in golang.org/x/crypto/ssh"
+    },
+    "golang.org/x/crypto:GO-2026-5016": {
+      "package": "golang.org/x/crypto",
+      "version": "0.33.0",
+      "id": "GO-2026-5016",
+      "summary": "Invoking memory leak when rejecting channels can lead to DoS in golang.org/x/crypto/ssh"
+    },
+    "golang.org/x/crypto:GO-2026-5017": {
+      "package": "golang.org/x/crypto",
+      "version": "0.33.0",
+      "id": "GO-2026-5017",
+      "summary": "Invoking client can cause server deadlock on unexpected responses in golang.org/x/crypto/ssh"
+    },
+    "golang.org/x/crypto:GO-2026-5018": {
+      "package": "golang.org/x/crypto",
+      "version": "0.33.0",
+      "id": "GO-2026-5018",
+      "summary": "Invoking pathological RSA/DSA parameters may cause DoS in golang.org/x/crypto/ssh"
+    },
+    "golang.org/x/crypto:GO-2026-5019": {
+      "package": "golang.org/x/crypto",
+      "version": "0.33.0",
+      "id": "GO-2026-5019",
+      "summary": "Invoking bypass of FIDO/U2F security keys physical interaction in golang.org/x/crypto/ssh"
+    },
+    "golang.org/x/crypto:GO-2026-5020": {
+      "package": "golang.org/x/crypto",
+      "version": "0.33.0",
+      "id": "GO-2026-5020",
+      "summary": "Invoking infinite loop on large channel writes in golang.org/x/crypto/ssh"
+    },
+    "golang.org/x/crypto:GO-2026-5021": {
+      "package": "golang.org/x/crypto",
+      "version": "0.33.0",
+      "id": "GO-2026-5021",
+      "summary": "Invoking auth bypass via unenforced @revoked status in golang.org/x/crypto/ssh/knownhosts"
+    },
+    "golang.org/x/crypto:GO-2026-5023": {
+      "package": "golang.org/x/crypto",
+      "version": "0.33.0",
+      "id": "GO-2026-5023",
+      "summary": "Invoking VerifiedPublicKeyCallback permissions skip enforcement in golang.org/x/crypto/ssh"
+    },
+    "golang.org/x/crypto:GO-2026-5033": {
+      "package": "golang.org/x/crypto",
+      "version": "0.33.0",
+      "id": "GO-2026-5033",
+      "summary": "Invoking pathological inputs can lead to client panic in golang.org/x/crypto/ssh/agent"
+    },
+    "golang.org/x/crypto:GO-2026-5932": {
+      "package": "golang.org/x/crypto",
+      "version": "0.33.0",
+      "id": "GO-2026-5932",
+      "summary": "The golang.org/x/crypto/openpgp package is unmaintained, unsafe by design, and has known security issues"
+    },
+    "golang.org/x/crypto:GO-2026-6303": {
+      "package": "golang.org/x/crypto",
+      "version": "0.33.0",
+      "id": "GO-2026-6303",
+      "summary": "Source-address critical option not enforced for non-public-key auth callbacks in golang.org/x/crypto/ssh"
+    },
+    "golang.org/x/crypto:GO-2026-6354": {
+      "package": "golang.org/x/crypto",
+      "version": "0.33.0",
+      "id": "GO-2026-6354",
+      "summary": "Prevent DoS on deadlocked undecided channel in golang.org/x/crypto/ssh"
+    },
+    "golang.org/x/crypto:GO-2026-6355": {
+      "package": "golang.org/x/crypto",
+      "version": "0.33.0",
+      "id": "GO-2026-6355",
+      "summary": "Prevent DoS on deadlocked established channel in golang.org/x/crypto/ssh"
+    },
+    "golang.org/x/text:GO-2026-5970": {
+      "package": "golang.org/x/text",
+      "version": "0.38.0",
+      "id": "GO-2026-5970",
+      "summary": "Infinite loop on invalid input in golang.org/x/text"
+    },
+    "golang.org/x/text:GO-2026-6629": {
+      "package": "golang.org/x/text",
+      "version": "0.38.0",
+      "id": "GO-2026-6629",
+      "summary": "Panic parsing crafted input in x/text/secure/precis in golang.org/x/text"
+    }
+  }
+}

@@ -65,6 +65,8 @@ Planned, not yet written:
 | `.github/workflows/fsh-vet.yml` | vets what we are about to build — see [Vetting](#vetting) |
 | `.fsh/upstream-scorecard.json` | baseline OpenSSF Scorecard result for upstream; the drift check compares against it |
 | `.fsh/compare-scorecard.py` | the comparison, failing the job on a regression |
+| `.fsh/upstream-osv.json` | baseline of upstream's known-vulnerable dependencies |
+| `.fsh/osv.py` | writes that baseline and compares against it |
 
 ## Vetting
 
@@ -75,7 +77,7 @@ tooling that is **free for public repos** — which is the reason this fork is p
 | Question | How | Fails the build? |
 |---|---|---|
 | Is our fork still upstream + our own files? | `git diff` against the merge-base, allowlisted paths | yes |
-| Do the dependencies have known vulnerabilities? | `osv-scanner` on `go.mod` | yes |
+| Do the dependencies have known vulnerabilities? | `osv-scanner` on `go.mod` vs `.fsh/upstream-osv.json` | yes, on a **new** advisory |
 | Has upstream's hygiene regressed? | OpenSSF Scorecard vs `.fsh/upstream-scorecard.json` | yes, on any check that drops |
 | What did the build touch at runtime? | StepSecurity Harden-Runner, per-step network/process/file | not yet — `audit` mode |
 
@@ -86,6 +88,13 @@ Dangerous-Workflow, Fuzzing, License and Maintained. Those zeroes are *why this 
 source* — they are not news, and the check does not fail on them. What it fails on is a **drop**:
 a `Dangerous-Workflow` or `Token-Permissions` regression is the shape a hostile change to upstream's
 release path would take.
+
+Every check is baseline-and-regression rather than pass/fail, because upstream's absolute
+numbers are bad and will stay bad: 3.3/10 and **40 dependency advisories** (37 of them against a
+single stale indirect, `golang.org/x/crypto v0.33.0`, pulled in by the Mongo driver — treeman's own
+source imports no `x/crypto` package, so reachability is doubtful, and a `go get` upstream would
+clear all 37). A check that is red on day one teaches everyone to ignore it. These go red only when
+something *moves*.
 
 Two honest limits, so nobody mistakes a green run for an audit:
 
