@@ -22,6 +22,7 @@ import (
 	"github.com/stubbedev/treeman/internal/store"
 	"github.com/stubbedev/treeman/internal/template"
 	"github.com/stubbedev/treeman/internal/wt"
+	"github.com/stubbedev/treeman/internal/wtlock"
 )
 
 func nowMillis() int64 { return time.Now().UnixMilli() }
@@ -185,10 +186,11 @@ func FinalizeWorktree(
 	// slips through (e.g. an explicit `treeman worktree finalize` while
 	// one is still running), it returns immediately instead of
 	// re-running setup hooks in parallel.
-	if !st.MarkFinalizeInFlight(wtRoot, cancel) {
-		return nil
+	release, err := beginFinalize(ctx, st, wtRoot, cancel)
+	if release == nil {
+		return err
 	}
-	defer st.UnmarkFinalizeInFlight(wtRoot)
+	defer release()
 
 	cfg, err = resolve.LoadResolvedForWorktree(repoRoot, wtRoot)
 	if err != nil {
@@ -576,6 +578,42 @@ func runFinalizeSetupPipeline(
 	return false, nil
 }
 
+// beginFinalize claims wtRoot for one finalize run and returns the
+// func that releases it. A nil release means the caller must return
+// the (possibly nil) error without doing any work:
+//   - another finalize of wtRoot is already in flight in this daemon
+//     (MarkFinalizeInFlight) — the duplicate is dropped, nil error;
+//   - ctx was cancelled (teardown preempt, deadline) while queued —
+//     a clean stop, nil error.
+//
+// MarkFinalizeInFlight only sees this daemon. A `treeman worktree
+// finalize --local` runs the same tail in its own process (#123), so
+// the run then queues behind it on the cross-process lock instead of
+// running the hooks and the database build alongside it.
+func beginFinalize(ctx context.Context, st *State, wtRoot string, cancel context.CancelFunc) (func(), error) {
+	if !st.MarkFinalizeInFlight(wtRoot, cancel) {
+		return nil, nil
+	}
+	unlock, err := wtlock.Acquire(ctx, wtlock.Finalize, wtRoot, nil)
+	if err == nil {
+		return func() {
+			unlock()
+			st.UnmarkFinalizeInFlight(wtRoot)
+		}, nil
+	}
+	st.UnmarkFinalizeInFlight(wtRoot)
+	return nil, unlessCancelled(ctx, err)
+}
+
+// unlessCancelled drops err when ctx was cancelled: a run stopped by
+// its own cancellation is a clean stop, not a failure.
+func unlessCancelled(ctx context.Context, err error) error {
+	if ctx.Err() != nil {
+		return nil //nolint:nilerr // cancellation is a clean stop, not an error
+	}
+	return err
+}
+
 // cancelledBefore is a phase-boundary cancellation checkpoint: when a
 // concurrent TeardownWorktree has fired `cancel`, it records a
 // worktree:create:cancel event naming the phase about to be skipped and
@@ -621,10 +659,11 @@ func FinalizeWorktreeForWatch(
 	// patches (EnsureFilter → `git add --renormalize` → clean filter)
 	// and runs on st.BgCtx with no inherited override.
 	ctx = gitcmd.WithPath(ctx, inheritedEnv["PATH"])
-	if !st.MarkFinalizeInFlight(wtRoot, cancel) {
-		return nil
+	release, err := beginFinalize(ctx, st, wtRoot, cancel)
+	if release == nil {
+		return err
 	}
-	defer st.UnmarkFinalizeInFlight(wtRoot)
+	defer release()
 
 	cfg, err := resolve.LoadResolvedForWorktree(repoRoot, wtRoot)
 	if err != nil {

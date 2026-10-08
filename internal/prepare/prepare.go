@@ -49,6 +49,7 @@ import (
 	"github.com/stubbedev/treeman/internal/snapshot"
 	"github.com/stubbedev/treeman/internal/store"
 	"github.com/stubbedev/treeman/internal/template"
+	"github.com/stubbedev/treeman/internal/wtlock"
 	"github.com/stubbedev/treeman/pkg/safego"
 )
 
@@ -625,6 +626,22 @@ func RunFiltered(
 	if runid.From(ctx) == "" {
 		ctx = runid.With(ctx, runid.New())
 	}
+	// Serialise against any other prepare of this worktree — including
+	// ones in other processes (`finalize --local`, the MCP server) that
+	// the daemon's in-process LockWorktreePrepare cannot see (#123).
+	// Two builds of the same source database drop and reload it under
+	// each other and leave it half-migrated.
+	unlock, err := wtlock.Acquire(ctx, wtlock.Prepare, worktreePath, func() {
+		if st != nil {
+			_ = st.WriteEvent(ctx, store.LevelInfo, store.EvtPrepareWait,
+				"another prepare of this worktree is running; waiting for it to finish",
+				repoID, worktreeID, "", 0, nil)
+		}
+	})
+	if err != nil {
+		return nil, fmt.Errorf("wait for concurrent prepare: %w", err)
+	}
+	defer unlock()
 	// Share engine version / max_connections probes across the parallel
 	// per-database goroutines below — N databases on one engine pay one
 	// round-trip instead of N.

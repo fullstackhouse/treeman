@@ -58,6 +58,7 @@ that emits it.
 | `prepare:rollback:start` | `store.EvtPrepareRollbackStart` |
 | `prepare:rollback:fallback` | `store.EvtPrepareRollbackFallback` |
 | `prepare:unsupported` | `store.EvtPrepareUnsupported` |
+| `prepare:wait` | `store.EvtPrepareWait` |
 
 ## databases — db operations
 

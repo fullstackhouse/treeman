@@ -44,6 +44,7 @@ const (
 	EvtPrepareRollbackStart       = "prepare:rollback:start"
 	EvtPrepareRollbackFallback    = "prepare:rollback:fallback"
 	EvtPrepareUnsupported         = "prepare:unsupported"
+	EvtPrepareWait                = "prepare:wait"
 
 	// databases — db operations
 	EvtDBDrop             = "db:drop"

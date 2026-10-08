@@ -2,6 +2,7 @@ package wt
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/stubbedev/treeman/internal/config"
@@ -10,6 +11,7 @@ import (
 	"github.com/stubbedev/treeman/internal/slug"
 	"github.com/stubbedev/treeman/internal/store"
 	"github.com/stubbedev/treeman/internal/template"
+	"github.com/stubbedev/treeman/internal/wtlock"
 )
 
 // RunLocalFinalize executes the setup + prepare tail in the calling
@@ -33,6 +35,16 @@ func RunLocalFinalize(
 	if sink == nil {
 		sink = NoopSink{}
 	}
+	// Queue behind a finalize already running for this worktree — the
+	// daemon's detached create tail, or another `--local` run. Running
+	// alongside it rebuilds the same databases under its feet (#123).
+	unlock, err := wtlock.Acquire(ctx, wtlock.Finalize, wtPath, func() {
+		sink.Info("another finalize of %s is still running; waiting for it to finish", wtPath)
+	})
+	if err != nil {
+		return fmt.Errorf("wait for running finalize: %w", err)
+	}
+	defer unlock()
 	runTrigger := func(trigger string, actions []config.Action) error {
 		if len(actions) == 0 {
 			return nil
@@ -72,12 +84,15 @@ func RunLocalFinalize(
 		return runTrigger("create-after-engines", cfg.Hooks.OnCreateAfterEngines)
 	}
 	outs, err := prepare.Run(ctx, cfg, wtPath, sl, st, repoID, wtID, env)
-	if err != nil {
-		sink.Warn("prepare failed: %v", err)
-	}
 	for _, o := range outs {
 		sink.Info("prepare[%s] %s template=%s clones=%d",
 			o.Engine, o.SourceDB, o.TemplateName, len(o.Clones))
+	}
+	if err != nil {
+		// Fail the run, as the daemon's finalize does: create-after-engines
+		// hooks assume ready databases, and exiting 0 here reported success
+		// over a stale or half-built database (#123).
+		return fmt.Errorf("prepare: %w", err)
 	}
 	return runTrigger("create-after-engines", cfg.Hooks.OnCreateAfterEngines)
 }
