@@ -1,0 +1,77 @@
+# Keeps the fork current without ever shipping unreviewed upstream code:
+# `master` fast-forwards from upstream automatically, and upstream reaches our
+# `fsh` branch only through a pull request a human (or an agent) reads. See FORK.md.
+name: fsh sync upstream
+
+on:
+  schedule:
+    - cron: "17 5 * * *"   # daily, 05:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: fsh-sync
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          ref: master
+
+      - name: Fast-forward master from upstream
+        id: ff
+        run: |
+          set -euo pipefail
+          git remote add upstream https://github.com/stubbedev/treeman.git
+          git fetch --quiet upstream master
+          before="$(git rev-parse HEAD)"
+          # Fast-forward only. If upstream ever rewrites history this fails loudly
+          # instead of quietly adopting it.
+          git merge --ff-only upstream/master
+          after="$(git rev-parse HEAD)"
+          if [ "$before" = "$after" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "master already at upstream ${after}"
+          else
+            git push origin master
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "master ${before} -> ${after}"
+          fi
+
+      - name: Open or update the sync PR
+        if: steps.ff.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Nothing to merge if fsh already contains master.
+          if git merge-base --is-ancestor origin/master origin/fsh; then
+            echo "fsh already contains master; no PR needed"; exit 0
+          fi
+          existing="$(gh pr list --base fsh --head master --state open --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            echo "PR #${existing} is already open; it will pick up the new commits"; exit 0
+          fi
+          count="$(git rev-list --count origin/fsh..origin/master)"
+          {
+            echo "Upstream moved: **${count}** commit(s) to merge into \`fsh\`."
+            echo
+            echo "Read the delta before merging — this is the only place unreviewed upstream"
+            echo "code can reach our builds:"
+            echo
+            echo '```'
+            echo "git log --oneline origin/fsh..origin/master"
+            echo '```'
+            echo
+            echo "Look for: new outbound hosts, new \`exec\`, writes outside the worktree, and any"
+            echo "change to slug/prefix matching or a DROP path. Merging triggers a new release."
+          } > body.md
+          gh pr create --base fsh --head master \
+            --title "sync upstream into fsh (${count} commit(s))" --body-file body.md

@@ -1,0 +1,95 @@
+# FSH fork release. Builds every platform from this branch's source, tests it,
+# attests the artifacts, and publishes a release in THIS repo — so FSH never
+# installs a binary it did not build. See FORK.md.
+name: fsh release
+
+on:
+  push:
+    branches: [fsh]
+    paths-ignore: ["**/*.md"]
+  workflow_dispatch:
+
+permissions:
+  contents: write        # create the release
+  id-token: write        # mint the Sigstore OIDC token
+  attestations: write    # persist the attestation
+  artifact-metadata: write
+
+concurrency:
+  group: fsh-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      # Actions are pinned by commit SHA, not tag: a tag is a mutable pointer,
+      # and this workflow holds contents: write. Comments carry the version.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0   # we need upstream's merge-base for the release notes
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+
+      - name: Test
+        # The same set we validate locally. e2e/ is excluded: it needs Docker
+        # engines and gates on harness.SkipIfNoDocker, so it proves nothing here.
+        run: go test ./internal/... ./pkg/... ./cmd/...
+
+      - name: Build every platform
+        # CGO_ENABLED=0 makes all four targets cross-compilable from one Linux
+        # runner, so this needs no macOS minutes. Flags match upstream's release
+        # build exactly (-trimpath, -s -w, version ldflag) so our artifacts stay
+        # comparable with theirs.
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          VERSION="$(git describe --tags --always --dirty 2>/dev/null || git rev-parse --short HEAD)"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          mkdir -p dist
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            goos="${target%%/*}"; goarch="${target##*/}"
+            stage="treeman-${VERSION}-${goos}-${goarch}"
+            mkdir -p "dist/${stage}"
+            for cmd in treeman treemand; do
+              GOOS="$goos" GOARCH="$goarch" go build -trimpath \
+                -ldflags="-s -w -X github.com/stubbedev/treeman/internal/version.Version=${VERSION}" \
+                -o "dist/${stage}/${cmd}" "./cmd/${cmd}"
+            done
+            cp README.md FORK.md LICENSE-MIT LICENSE-APACHE "dist/${stage}/" 2>/dev/null || true
+            tar --format=ustar -czf "dist/${stage}.tar.gz" -C dist "${stage}"
+            ( cd dist && shasum -a 256 "${stage}.tar.gz" > "${stage}.tar.gz.sha256" )
+            rm -rf "dist/${stage}"
+          done
+          ls -l dist/
+
+      - name: Attest the artifacts
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
+        with:
+          subject-path: dist/*.tar.gz
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="fsh-$(date -u +%Y%m%d)-$(git rev-parse --short HEAD)"
+          base="$(git rev-parse --short "$(git merge-base HEAD origin/master)")"
+          {
+            echo "FSH build of treeman, from this fork's \`fsh\` branch."
+            echo
+            echo "- Source commit: \`$(git rev-parse HEAD)\`"
+            echo "- Upstream base: \`${base}\` (stubbedev/treeman master)"
+            echo "- Go: \`$(go version | awk '{print $3}')\`, \`CGO_ENABLED=0 -trimpath\`"
+            echo
+            echo "Verify before use — the attestation binds these bytes to this repo, commit and workflow:"
+            echo '```'
+            echo "gh attestation verify treeman-*-darwin-arm64.tar.gz --repo ${GITHUB_REPOSITORY}"
+            echo '```'
+            echo
+            echo "Patches carried on top of upstream: see [FORK.md](../blob/fsh/FORK.md)."
+          } > notes.md
+          gh release create "$tag" dist/*.tar.gz dist/*.tar.gz.sha256 \
+            --title "$tag" --notes-file notes.md --latest
