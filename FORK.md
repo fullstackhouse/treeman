@@ -79,7 +79,7 @@ tooling that is **free for public repos** — which is the reason this fork is p
 | Is our fork still upstream + our own files? | `git diff` against the merge-base, allowlisted paths | yes |
 | Do the dependencies have known vulnerabilities? | `osv-scanner` on `go.mod` vs `.fsh/upstream-osv.json` | yes, on a **new** advisory |
 | Has upstream's hygiene regressed? | OpenSSF Scorecard vs `.fsh/upstream-scorecard.json` | yes, on any check that drops |
-| What did the build touch at runtime? | StepSecurity Harden-Runner, per-step network/process/file | not yet — `audit` mode |
+| What did the build touch at runtime? | StepSecurity Harden-Runner, per-step network/process/file | yes — `block`, per-job allowlist |
 
 The baseline was taken 2026-10-08 at upstream `55dcdd5f`: **aggregate 3.3/10**, with `0` on
 Signed-Releases, Token-Permissions, Pinned-Dependencies, Branch-Protection, Code-Review (0 of 30
@@ -112,9 +112,24 @@ every job anyone adds later — started with write access to the repository. Bot
 `contents: read` at the top and put the write scopes on the single job that needs them. Upstream's
 `release.yml:9` has the same shape, and that is one of the patches we intend to offer.
 
-Harden-Runner starts in `audit` because a wrong allowlist breaks the release. Once a few runs have
-reported the real endpoint set, flip it to `block` — at which point a dependency or an upstream
-commit that phones home during `go build` fails the release instead of shipping.
+Harden-Runner runs in **`block`** mode in all three workflows, each job with its own allowlist.
+A call to anything else fails the job — so a dependency or an upstream commit that phones home
+during `go test` or `go build` cannot ship.
+
+The allowlists were harvested from the audit-mode run of 2026-10-08: its logs name every endpoint
+and the process that called it, so no dashboard was needed. Two things worth knowing if you ever
+regenerate them:
+
+- **Runner and Actions-cache infrastructure is not listed.** The agent allows it implicitly
+  (verified by flipping the vet jobs first). Those hostnames are region- and shard-specific
+  (`run-actions-1-azure-eastus`, `productionresultssa1.blob.core.windows.net`) and pinning them
+  would rot.
+- **Observed is not the same as required.** The release run never contacted `proxy.golang.org`,
+  because `setup-go` restored the module cache — on a cache miss it would have, and would have been
+  blocked. The Go module endpoints are in the release allowlist despite never appearing in a log.
+
+When a job legitimately needs a new endpoint it fails with the hostname in its log. Add it here,
+in a commit that says why.
 
 ## Installing our build
 

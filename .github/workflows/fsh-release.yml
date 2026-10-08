@@ -28,14 +28,32 @@ jobs:
       attestations: write    # persist the attestation
       artifact-metadata: write
     steps:
-      # StepSecurity Harden-Runner: monitors every outbound connection, process
-      # and file write in this job, correlated to the step that caused it. Free
-      # for public repos. `audit` records a baseline; flip to `block` with an
-      # allowlist once the first runs have told us the real endpoint list — then
-      # an upstream commit that phones home during `go build` fails here.
+      # StepSecurity Harden-Runner, blocking: any outbound call this job makes
+      # to an endpoint not listed below fails the release. That is the point —
+      # a dependency or an upstream commit that phones home during `go test` or
+      # `go build` cannot ship. Runner and Actions-cache infrastructure is
+      # allowed implicitly by the agent (verified on the vet jobs first), and is
+      # deliberately not listed: those hostnames are region-specific.
       - uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
         with:
-          egress-policy: audit
+          egress-policy: block
+          # Harvested from the audit run, plus the three Go module endpoints it
+          # did NOT show: that run restored the module cache from the Actions
+          # cache, so a cache miss would have hit proxy.golang.org,
+          # sum.golang.org and storage.googleapis.com and been blocked.
+          # "Observed" is not the same as "required".
+          allowed-endpoints: >
+            api.github.com:443
+            fulcio.sigstore.dev:443
+            github.com:443
+            objects.githubusercontent.com:443
+            proxy.golang.org:443
+            rekor.sigstore.dev:443
+            release-assets.githubusercontent.com:443
+            storage.googleapis.com:443
+            sum.golang.org:443
+            tuf-repo-cdn.sigstore.dev:443
+            uploads.github.com:443
 
       # Actions are pinned by commit SHA, not tag: a tag is a mutable pointer,
       # and this workflow holds contents: write. Comments carry the version.
