@@ -9,8 +9,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 concurrency:
   group: fsh-sync
@@ -19,6 +18,9 @@ concurrency:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write        # fast-forward master
+      pull-requests: write   # open the sync PR
     steps:
       # StepSecurity Harden-Runner: monitors every outbound connection, process
       # and file write in this job, correlated to the step that caused it. Free

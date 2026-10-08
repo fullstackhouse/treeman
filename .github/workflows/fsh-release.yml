@@ -9,11 +9,11 @@ on:
     paths-ignore: ["**/*.md"]
   workflow_dispatch:
 
+# Least privilege at the top, so a job added later starts with nothing. The
+# write scopes live on the one job that needs them. (Our own fsh-vet.yml caught
+# this: Scorecard scores a top-level `contents: write` as 0.)
 permissions:
-  contents: write        # create the release
-  id-token: write        # mint the Sigstore OIDC token
-  attestations: write    # persist the attestation
-  artifact-metadata: write
+  contents: read
 
 concurrency:
   group: fsh-release
@@ -22,6 +22,11 @@ concurrency:
 jobs:
   release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write        # create the release
+      id-token: write        # mint the Sigstore OIDC token
+      attestations: write    # persist the attestation
+      artifact-metadata: write
     steps:
       # StepSecurity Harden-Runner: monitors every outbound connection, process
       # and file write in this job, correlated to the step that caused it. Free

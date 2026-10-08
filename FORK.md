@@ -106,6 +106,12 @@ Two honest limits, so nobody mistakes a green run for an audit:
   controls that actually bound our risk are operational, not analytical: a non-superuser role
   scoped to our database prefix, a scrubbed env at the call site, `--no-daemon`, local hosts only.
 
+It found something in our own files on its first run, which is the point: `fsh-release.yml` and
+`fsh-sync.yml` both declared `contents: write` at the **top level**, so every job in them — and
+every job anyone adds later — started with write access to the repository. Both now declare
+`contents: read` at the top and put the write scopes on the single job that needs them. Upstream's
+`release.yml:9` has the same shape, and that is one of the patches we intend to offer.
+
 Harden-Runner starts in `audit` because a wrong allowlist breaks the release. Once a few runs have
 reported the real endpoint set, flip it to `block` — at which point a dependency or an upstream
 commit that phones home during `go build` fails the release instead of shipping.
