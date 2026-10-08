@@ -67,6 +67,7 @@ Planned, not yet written:
 | `.fsh/compare-scorecard.py` | the comparison, failing the job on a regression |
 | `.fsh/upstream-osv.json` | baseline of upstream's known-vulnerable dependencies |
 | `.fsh/osv.py` | writes that baseline and compares against it |
+| `.fsh/socket/go.mod` | a manifest nothing builds, so Socket scores upstream's own code — see [Vetting](#vetting) |
 
 ## Vetting
 
@@ -130,6 +131,25 @@ regenerate them:
 
 When a job legitimately needs a new endpoint it fails with the hostname in its log. Add it here,
 in a commit that says why.
+
+### The one thing the checks above cannot do
+
+They score *practices* and *dependencies*. They say nothing about upstream's own 65k lines — the
+ones we decided not to read on every sync. Socket's Go analysis (obfuscation, backdoors,
+`exec.Command` misuse) does read code, but only code in a **dependency graph**, and here treeman is
+the root module.
+
+`.fsh/socket/go.mod` closes that: a nested module, built and imported by nothing, whose only
+`require` is the upstream module at the commit we are about to build. That puts upstream's code
+where Socket's analysis applies. It is excluded from `go build ./...` and from the release
+workflow's explicit package list, so it costs nothing at build time.
+
+Its version is a **pseudo-version**, not a tag — upstream's module path has no `/v2` suffix while
+its tags are `v2.x`, so Go refuses `v2.5.103+incompatible` outright. Re-resolve on every rebase:
+
+```sh
+go list -m github.com/stubbedev/treeman@<upstream-sha>
+```
 
 ## Installing our build
 
