@@ -18,6 +18,7 @@ type Family string
 const (
 	FamilyMySQL    Family = "mysql"         // mysql / mariadb / tidb
 	FamilyPostgres Family = "postgres"      // postgres / postgresql
+	FamilyMSSQL    Family = "mssql"         // mssql / sqlserver
 	FamilyMongo    Family = "mongodb"       // mongodb
 	FamilyRedis    Family = "redis"         // redis / valkey / dragonfly
 	FamilyES       Family = "elasticsearch" // elasticsearch / opensearch
@@ -33,6 +34,7 @@ const (
 var Known = []string{
 	"mysql", "mariadb", "tidb",
 	"postgres", "postgresql",
+	"mssql", "sqlserver",
 	"mongodb",
 	"redis", "valkey", "dragonfly",
 	"elasticsearch", "opensearch",
@@ -55,6 +57,8 @@ func Canonical(eng string) (Family, bool) {
 		return FamilyMySQL, true
 	case "postgres", "postgresql":
 		return FamilyPostgres, true
+	case "mssql", "sqlserver":
+		return FamilyMSSQL, true
 	case "mongodb":
 		return FamilyMongo, true
 	case "redis", "valkey", "dragonfly":

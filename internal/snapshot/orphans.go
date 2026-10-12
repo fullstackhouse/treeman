@@ -46,8 +46,8 @@ var redisTemplatePrefix = regexp.MustCompile(`^(_tm:[0-9a-f]{16}:)`)
 // `_tm:` prefixes are findable (and DropSnapshot-able) without a
 // manual FLUSHDB.
 var orphanFamilies = []engine.Family{
-	engine.FamilyMySQL, engine.FamilyPostgres, engine.FamilyMongo, engine.FamilyES,
-	engine.FamilyRedis,
+	engine.FamilyMySQL, engine.FamilyPostgres, engine.FamilyMSSQL, engine.FamilyMongo,
+	engine.FamilyES, engine.FamilyRedis,
 }
 
 // templateNameSource is the store subset FindOrphans needs.
@@ -116,7 +116,7 @@ func listTemplates(ctx context.Context, conn engineconn.Conn, fam engine.Family)
 		// cleanup for the file family goes through GC + PurgeRepo, which
 		// act on recorded snapshot rows.
 		return nil, nil
-	case engine.FamilyMySQL, engine.FamilyPostgres, engine.FamilyMongo, engine.FamilyS3:
+	case engine.FamilyMySQL, engine.FamilyPostgres, engine.FamilyMSSQL, engine.FamilyMongo, engine.FamilyS3:
 		// name-scoped default already set
 	}
 	names, err := conn.ListMatching(ctx, prefix)
@@ -140,32 +140,48 @@ func listTemplates(ctx context.Context, conn engineconn.Conn, fam engine.Family)
 // capture group 1 is the owning template.
 var spareNamePattern = regexp.MustCompile(`^(_tm_(?:tmpl_[a-z]+_)?[0-9a-f]{16})_spare[0-9]+$`)
 
+// spareFamilies is every family whose driver can hold a pre-warmed
+// spare pool — the same set config.PrewarmCapableEngines admits, as a
+// fixed-order slice so SpareCounts walks them deterministically.
+var spareFamilies = []engine.Family{
+	engine.FamilyPostgres, engine.FamilyMySQL, engine.FamilyMSSQL,
+}
+
 // SpareCounts returns the number of pre-warmed spare databases per
-// template name, as they exist engine-side right now. Postgres-only
-// today (the only engine prewarm supports); returns an empty map
-// without error when postgres isn't configured. Feeds the doctor's
-// snapshots probe and the `snapshots list` SPARES column — the only
-// surfaces that make the otherwise-anonymous pool observable.
+// template name, as they exist engine-side right now, across every
+// prewarm-capable family that is configured. Template names carry the
+// fingerprint, so two families cannot collide on a key. Feeds the
+// doctor's snapshots probe and the `snapshots list` SPARES column — the
+// only surfaces that make the otherwise-anonymous pool observable.
 func SpareCounts(ctx context.Context, cfg *config.Config) (map[string]int, error) {
-	if !engineconn.Configured(cfg, engine.FamilyPostgres, "") {
-		return map[string]int{}, nil
+	out := map[string]int{}
+	for _, fam := range spareFamilies {
+		if !engineconn.Configured(cfg, fam, "") {
+			continue
+		}
+		if err := addSpareCounts(ctx, cfg, fam, out); err != nil {
+			return nil, err
+		}
 	}
-	conn, _, err := engineconn.Connect(ctx, cfg, engine.FamilyPostgres, "")
+	return out, nil
+}
+
+func addSpareCounts(ctx context.Context, cfg *config.Config, fam engine.Family, out map[string]int) error {
+	conn, _, err := engineconn.Connect(ctx, cfg, fam, "")
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer func() { _ = conn.Close() }()
 	names, err := conn.ListMatching(ctx, "_tm_")
 	if err != nil {
-		return nil, err
+		return err
 	}
-	out := map[string]int{}
 	for _, name := range names {
 		if m := spareNamePattern.FindStringSubmatch(name); m != nil {
 			out[m[1]]++
 		}
 	}
-	return out, nil
+	return nil
 }
 
 // DropOrphans reclaims the given orphans: each template is dropped

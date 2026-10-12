@@ -4,6 +4,11 @@
 #   1. Is upstream's security hygiene getting worse?  (scorecard vs a baseline)
 #   2. Do our dependencies have known vulnerabilities? (osv-scanner)
 #   3. Is our fork still additive-only?                (diff vs upstream)
+#   4. Does the code we are about to build still build and pass? (go test)
+#
+# (4) is here because upstream's own ci.yml only triggers on PRs to main/master
+# — a PR into `fsh` gets none of it, so without this job our own patches would
+# merge with no build, vet or test gate at all.
 #
 # None of this proves upstream code is benign — Scorecard measures practices,
 # not intent. It is a prior and a drift detector, not a verdict. See FORK.md.
@@ -56,7 +61,22 @@ jobs:
           # Files we are allowed to add or change on top of upstream. Anything
           # else means we have started editing his tree — which is a decision,
           # not an accident, so it has to be made here, in this list.
+          #
+          # P4, the SQL Server driver, is the first entry that edits upstream's
+          # own files rather than only adding ours: an engine family touches the
+          # engine registry, the config schema, prepare, resolve and the docs.
+          # The FORK.md row carries the why and the drop-when; this list carries
+          # the blast radius. Keep the two in step.
           allowed='^(FORK\.md|PATCHES\.md|\.fsh/|\.github/workflows/fsh-)'
+          allowed="$allowed"'|^(internal/db/mssql/|e2e/mssql/|internal/db/ident/mssql\.go)'
+          allowed="$allowed"'|^(go\.mod|go\.sum|justfile|README\.md|docs/|schemas/|e2e/README\.md)'
+          allowed="$allowed"'|^internal/(engine/engine(_test)?\.go|schema/schema\.go)'
+          allowed="$allowed"'|^internal/config/(config|connections|validate|connections_test|dsn_test)\.go'
+          allowed="$allowed"'|^internal/db/(engineconn/|reachability/reachability\.go)'
+          allowed="$allowed"'|^internal/prepare/(prepare|branchstate|branchreap|coldbuild_invariant_test)\.go'
+          allowed="$allowed"'|^internal/(resolve/resolve\.go|snapshot/orphans\.go|initgen/initgen\.go)'
+          allowed="$allowed"'|^internal/mcp/(tools_engine|tools_write|server)\.go'
+          allowed="$allowed"'|^cmd/treeman/cmd/(misc|doctor_engines)\.go'
           base="$(git merge-base HEAD upstream/master)"
           unexpected="$(git diff --name-only "$base"..HEAD | grep -Ev "$allowed" || true)"
           if [ -n "$unexpected" ]; then
@@ -104,6 +124,47 @@ jobs:
           osv-scanner scan source --lockfile=go.mod --format=json > /tmp/osv.json || true
           python3 .fsh/osv.py compare .fsh/upstream-osv.json /tmp/osv.json \
             >> "$GITHUB_STEP_SUMMARY"
+
+  # Build, vet and test. Deliberately NOT a copy of upstream's full ci.yml:
+  # no lint (the flake-pinned golangci-lint is a nix download this job's
+  # egress policy would have to admit, and a lint finding in upstream's tree
+  # is not ours to gate on), no macOS matrix, no e2e tier — e2e needs docker
+  # engines and is run by hand. What it does cover is the gate a patch into
+  # `fsh` otherwise has none of.
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            api.github.com:443
+            github.com:443
+            objects.githubusercontent.com:443
+            proxy.golang.org:443
+            release-assets.githubusercontent.com:443
+            storage.googleapis.com:443
+            sum.golang.org:443
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go build ./...
+      - run: go vet ./...
+      # The e2e suites are behind `//go:build e2e`, so the untagged vet above
+      # never type-checks them — a signature change reaches them only here.
+      - run: go vet -tags e2e ./e2e/...
+      - run: go test ./...
+      - name: gofmt
+        run: |
+          set -euo pipefail
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt would rewrite:"
+            echo "$unformatted"
+            exit 1
+          fi
 
   # Has upstream's hygiene regressed since we last looked? A drop in
   # Token-Permissions, Dangerous-Workflow or Pinned-Dependencies is exactly the

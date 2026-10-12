@@ -17,8 +17,8 @@ First run pulls ~6 GB of images and compiles ~2 GB of Rust deps
 (sqlx-cli + diesel_cli). Subsequent runs are container-cached.
 
 Tests run sequentially against the host's docker daemon — each suite
-binds a unique host port (13306–15562, 16380, 19200–19201, 27117–27118)
-so you don't need `-p 1`.
+binds a unique host port (11433, 13306–15562, 16380, 19200–19201,
+27117–27118) so you don't need `-p 1`.
 
 ## Coverage matrix
 
@@ -28,6 +28,7 @@ so you don't need `-p 1`.
 |---|---|---|
 | `mysql/` | MySQL 8.4 | Cold build → cache hit → cold rebuild on input edit |
 | `postgres/` | Postgres 16 | Same cycle |
+| `mssql/` | SQL Server 2022 | Same cycle, plus the driver's BACKUP/RESTORE clone path, the rename-based spare claim and its race |
 | `mongo/` | MongoDB 7 | Seed → snapshot → cache hit cycle |
 | `redis/` | Redis 7 | Prefix-keyed template + fingerprint change |
 | `elasticsearch/` | ES 8.15 | NDJSON `_bulk` dump → snapshot → fanout |

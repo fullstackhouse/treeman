@@ -11,6 +11,11 @@ Our diff against upstream is **new files**, plus the smallest possible edits to 
 We do **not** delete the parts we don't use (the MCP server, the TUI, the MySQL/Mongo drivers,
 `treeman git`). Dead code costs disk; a 20k-line deletion costs us every future merge.
 
+A new engine family is the one shape that cannot honour "new files only" — the engine registry,
+the config schema, prepare, resolve and the generated docs all have to learn it. The patch index
+below names each such patch and `.github/workflows/fsh-vet.yml` carries the matching allowlist, so
+the blast radius is written down in both places rather than discovered during a merge.
+
 - `master` — untouched mirror of upstream. Never commit here; it only fast-forwards.
 - `fsh` — our branch, and the one we release from. Upstream arrives by **pull request**
   (`fsh-sync.yml`), never by an unattended rebase, so somebody reads the delta before we ship it.
@@ -23,14 +28,14 @@ We do **not** delete the parts we don't use (the MCP server, the TUI, the MySQL/
    been abused — it is the same mutable-tag pattern most repos have, ours included — but it means
    a published binary is not cryptographically tied to the source. Building it ourselves makes
    that question moot.
-2. **We need a Meilisearch driver**, which upstream has no support for and 7 of our 8 local
-   stacks require.
+2. **We need drivers upstream does not have** — Meilisearch, which 7 of our 8 local stacks
+   require, and SQL Server, which one client's whole ERP is.
 3. **Two safety fixes we would rather not wait for** (see the patch index).
 
 Everything in (1) is fixable upstream with ~5 lines (`actions/attest-build-provenance`, pinning
 `xilo@v1`, a `dist/` gitignore entry). We intend to offer those. **If upstream takes them, this
-fork's reason to exist shrinks to the Meilisearch driver, and we should say so here and shrink
-it.** A fork that outlives its justification is just technical debt with a remote.
+fork's reason to exist shrinks to the drivers, and we should say so here and shrink it.** A fork
+that outlives its justification is just technical debt with a remote.
 
 ## What we actually run
 
@@ -45,7 +50,7 @@ Every patch is one commit, and one row here. A row without a **Drop when** condi
 
 | # | Patch | Why | Upstream | Drop when |
 |---|---|---|---|---|
-| — | _none yet_ | the branch currently carries only the additive files below | — | — |
+| P4 | SQL Server (`mssql`) engine family | Groomershop's ERP is Subiekt GT on SQL Server. Its test tier runs against one shared container with hardcoded ids, so two worktrees — or two jest workers — cannot run it at once; Postgres gets per-worktree databases and per-worker clones from treeman, SQL Server got nothing. Upstream supports Postgres/MySQL/Mongo/Redis/ES-OpenSearch/S3 and has a clean driver interface to extend | offer once it has run a few weeks for us | upstream merges it |
 
 Planned, not yet written:
 
@@ -68,6 +73,9 @@ Planned, not yet written:
 | `.fsh/upstream-osv.json` | baseline of upstream's known-vulnerable dependencies |
 | `.fsh/osv.py` | writes that baseline and compares against it |
 | `.fsh/socket/go.mod` | a manifest nothing builds, so Socket scores upstream's own code — see [Vetting](#vetting) |
+| `internal/db/mssql/` | the SQL Server driver (P4) |
+| `internal/db/ident/mssql.go` | bracket-quoting for SQL Server identifiers (P4) |
+| `e2e/mssql/` | its docker-tier suite: the prepare cycle, plus the driver's clone path, spare claim and rename race (P4) |
 
 ## Vetting
 
@@ -96,6 +104,13 @@ single stale indirect, `golang.org/x/crypto v0.33.0`, pulled in by the Mongo dri
 source imports no `x/crypto` package, so reachability is doubtful, and a `go get` upstream would
 clear all 37). A check that is red on day one teaches everyone to ignore it. These go red only when
 something *moves*.
+
+The one dependency we have added is `github.com/microsoft/go-mssqldb` (P4). It carries no OSV
+advisory of its own, and it drags `golang.org/x/crypto` from 0.33.0 up to 0.55.0 — which clears 34
+of the 37 advisories that single stale indirect contributes to the baseline. The three that remain
+on 0.55.0 are all baselined already, so the deps check stays green without a re-baseline. Its
+Azure, Key Vault and Kerberos modules are in its `go.mod` but not in ours: they belong to packages
+we do not import, and module-graph pruning keeps them out of `go.sum`.
 
 Two honest limits, so nobody mistakes a green run for an audit:
 

@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/stubbedev/treeman/internal/config"
+	dbmssql "github.com/stubbedev/treeman/internal/db/mssql"
 	dbmysql "github.com/stubbedev/treeman/internal/db/mysql"
 	dbpostgres "github.com/stubbedev/treeman/internal/db/postgres"
 	"github.com/stubbedev/treeman/internal/engine"
@@ -19,6 +20,7 @@ func TestPrewarmCapableEnginesMatchCapabilities(t *testing.T) {
 	conns := map[string]Conn{
 		"mysql":    NewMySQLConn(&dbmysql.Driver{}),
 		"postgres": NewPostgresConn(&dbpostgres.Driver{}),
+		"mssql":    NewMSSQLConn(&dbmssql.Driver{}),
 	}
 	for fam := range config.PrewarmCapableEngines {
 		conn, ok := conns[fam]
@@ -42,7 +44,7 @@ func TestPrewarmCapableEnginesMatchCapabilities(t *testing.T) {
 		if !ok {
 			continue
 		}
-		if fam == engine.FamilyMySQL || fam == engine.FamilyPostgres {
+		if fam == engine.FamilyMySQL || fam == engine.FamilyPostgres || fam == engine.FamilyMSSQL {
 			continue
 		}
 		conn, ok := conns[string(fam)]

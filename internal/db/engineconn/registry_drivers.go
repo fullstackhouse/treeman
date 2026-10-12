@@ -14,6 +14,7 @@ import (
 	"github.com/stubbedev/treeman/internal/config"
 	dbes "github.com/stubbedev/treeman/internal/db/es"
 	dbmongo "github.com/stubbedev/treeman/internal/db/mongo"
+	dbmssql "github.com/stubbedev/treeman/internal/db/mssql"
 	dbmysql "github.com/stubbedev/treeman/internal/db/mysql"
 	dbpostgres "github.com/stubbedev/treeman/internal/db/postgres"
 	dbredis "github.com/stubbedev/treeman/internal/db/redis"
@@ -71,6 +72,26 @@ func init() {
 				return nil, true, err
 			}
 			return postgresConn{d}, true, nil
+		},
+	})
+	Register(engine.FamilyMSSQL, DriverFactory{
+		Configured: func(cfg *config.Config, name string) bool {
+			conn, err := cfg.Connections.ResolveMssql(name)
+			return err == nil && conn != nil
+		},
+		Connect: func(ctx context.Context, cfg *config.Config, name string) (Conn, bool, error) {
+			conn, err := cfg.Connections.ResolveMssql(name)
+			if err != nil {
+				return nil, true, err
+			}
+			if conn == nil {
+				return nil, false, nil
+			}
+			d, err := dbmssql.Connect(ctx, *conn)
+			if err != nil {
+				return nil, true, err
+			}
+			return mssqlConn{d}, true, nil
 		},
 	})
 	Register(engine.FamilyMongo, DriverFactory{

@@ -125,9 +125,9 @@ func engineEntry(name, engine string, fam enginepkg.Family) *yaml.Node {
 			"clones", scalar("auto"),
 			"name_template", scalar(name+"_testing_{slug}_test_{n}"),
 		))
-		if fam == enginepkg.FamilyPostgres || fam == enginepkg.FamilyMySQL {
+		if fam == enginepkg.FamilyPostgres || fam == enginepkg.FamilyMySQL || fam == enginepkg.FamilyMSSQL {
 			mapSet(db, "prewarm", scalar("2"))
-			mapKeyNode(db, "prewarm").LineComment = "spare clones pre-restored from the template; cache-hit creates claim one cheaply (rename on postgres, physical clone on mysql)"
+			mapKeyNode(db, "prewarm").LineComment = "spare clones pre-restored from the template; cache-hit creates claim one cheaply (rename on postgres and mssql, physical clone on mysql)"
 		}
 	}
 	return db
@@ -190,14 +190,15 @@ func frameworkDbEntry(name string, spec framework.Spec) *yaml.Node {
 	))
 	// prewarm only applies to the spare-capable engines — scaffold it
 	// where it's valid so users discover the knob.
-	if fam, ok := enginepkg.Canonical(spec.EngineHint); ok && (fam == enginepkg.FamilyPostgres || fam == enginepkg.FamilyMySQL) {
+	if fam, ok := enginepkg.Canonical(spec.EngineHint); ok &&
+		(fam == enginepkg.FamilyPostgres || fam == enginepkg.FamilyMySQL || fam == enginepkg.FamilyMSSQL) {
 		mapSet(db, "prewarm", scalar("2"))
-		mapKeyNode(db, "prewarm").LineComment = "spare clones pre-restored from the template; cache-hit creates claim one cheaply (rename on postgres, physical clone on mysql)"
+		mapKeyNode(db, "prewarm").LineComment = "spare clones pre-restored from the template; cache-hit creates claim one cheaply (rename on postgres and mssql, physical clone on mysql)"
 	}
 	return db
 }
 
-// inferEngineFromEnv picks mysql or postgres from DATABASE_URL — the
+// inferEngineFromEnv picks mysql, postgres or mssql from DATABASE_URL — the
 // process env first, then a repo-root .env — so a hintless framework
 // (e.g. rails) on a known engine still scaffolds the right one. ""
 // when neither source yields a usable scheme.
@@ -225,6 +226,8 @@ func inferEngineFromEnv(cwd string) string {
 		return "postgres"
 	case "mysql", "mariadb":
 		return "mysql"
+	case "sqlserver", "mssql":
+		return "mssql"
 	default:
 		return ""
 	}

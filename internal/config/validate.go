@@ -390,9 +390,32 @@ func (d DatabaseConfig) validateFamily(fam engine.Family, path string) error {
 		return d.validateS3(path)
 	case engine.FamilyFile:
 		return d.validateFile(path)
+	case engine.FamilyMSSQL:
+		return d.validateMssql(path)
 	default:
 		return nil
 	}
+}
+
+// validateMssql rejects `dump:`. Every other engine's dump loader reads
+// the file treeman is pointed at; SQL Server's RESTORE reads a path on
+// the SERVER, so a host path means nothing to it — and with the server
+// in a container the two filesystems are unrelated. Rejecting is the
+// honest answer: the alternative silently restores whatever happens to
+// sit at that path inside the container, or nothing.
+//
+// Seed through `migrate:`/`seed:` instead — those are commands, so they
+// can be `sqlcmd -i`, `docker cp` + RESTORE, or anything else that knows
+// how to get a file to the server.
+func (d DatabaseConfig) validateMssql(path string) error {
+	if len(d.Dump) == 0 {
+		return nil
+	}
+	return fmt.Errorf(
+		"%s: engine %q does not support `dump:` — RESTORE reads the path on the SQL Server host, not on this machine, so a local file is not reachable. Load the dump from `seed:` instead (e.g. a command that copies the .bak to the server and RESTOREs it)",
+		path,
+		d.Engine,
+	)
 }
 
 func (d DatabaseConfig) validate(path string) error {
@@ -472,14 +495,16 @@ func (d DatabaseConfig) validate(path string) error {
 
 // PrewarmCapableEngines lists the engine families whose driver
 // implements the spare capabilities (engineconn.SnapshotCreator +
-// SpareClaimer): Postgres claims spares via a constant-time catalog
-// rename, MySQL via a staged physical clone. It lives here because
+// SpareClaimer): Postgres and SQL Server claim spares via a
+// constant-time catalog rename, MySQL via a staged physical clone. It
+// lives here because
 // engineconn imports config — a cycle would result the other way —
 // and engineconn's tests cross-check that every listed family's conn
 // really implements both interfaces, so the set can't drift.
 var PrewarmCapableEngines = map[string]bool{
 	"mysql":    true,
 	"postgres": true,
+	"mssql":    true,
 }
 
 // validatePrewarm guards `databases[].prewarm`. Accepts any family
@@ -494,7 +519,7 @@ func (d DatabaseConfig) validatePrewarm(path string) []error {
 	fam, ok := engine.Canonical(d.Engine)
 	if !ok || !PrewarmCapableEngines[string(fam)] {
 		errs = append(errs, fmt.Errorf(
-			"%s: prewarm is not supported for engine %q (capable: mysql, postgres) — it has no cheap spare-claim path",
+			"%s: prewarm is not supported for engine %q (capable: mysql, postgres, mssql) — it has no cheap spare-claim path",
 			path, d.Engine))
 	}
 	if d.BranchScoped {

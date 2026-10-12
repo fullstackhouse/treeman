@@ -523,7 +523,7 @@ re-sync branch_scoped databases from the live base branch (defaults to the cwd's
 | Flag | Usage |
 |---|---|
 | `-r`, `--repo` |  |
-| `--engine` | restrict the reset to one engine family (mysql, postgres, mongodb, redis, elasticsearch; aliases like mariadb/postgresql/valkey/dragonfly accepted) |
+| `--engine` | restrict the reset to one engine family (mysql, postgres, mssql, mongodb, redis, elasticsearch; aliases like mariadb/postgresql/sqlserver/valkey/dragonfly accepted) |
 | `--json` |  |
 | `--dry-run` | list the branch_scoped namespaces that would be dropped + re-seeded; change nothing, connect nowhere |
 | `-f`, `--wait`, `--foreground` | stream the daemon's live progress and block until done (default: dispatch and return) |
@@ -535,7 +535,7 @@ capture branch_scoped databases into the current branch's durable copies without
 | Flag | Usage |
 |---|---|
 | `-r`, `--repo` |  |
-| `--engine` | restrict the save to one engine family (mysql, postgres, mongodb, redis, elasticsearch; aliases like mariadb/postgresql/valkey/dragonfly accepted) |
+| `--engine` | restrict the save to one engine family (mysql, postgres, mssql, mongodb, redis, elasticsearch; aliases like mariadb/postgresql/sqlserver/valkey/dragonfly accepted) |
 | `--json` |  |
 | `-f`, `--wait`, `--foreground` | stream the daemon's live progress and block until done (default: dispatch and return) |
 
@@ -866,7 +866,7 @@ print the slug treeman derives for a worktree
 | `--force` |  |
 | `--json` |  |
 | `--global` | scaffold the user-global ~/.config/treeman/config.yaml (machine-wide defaults) instead of a per-repo .treeman.yaml |
-| `--engine` | comma-separated engines to activate in databases: (e.g. mysql,postgres,redis) — emits minimal blocks when detection found no framework |
+| `--engine` | comma-separated engines to activate in databases: (e.g. mysql,postgres,mssql,redis) — emits minimal blocks when detection found no framework |
 | `--interactive` | pick engines from a terminal picker instead of --engine (declines gracefully when stdin is not a TTY) |
 
 ### `treeman doctor`

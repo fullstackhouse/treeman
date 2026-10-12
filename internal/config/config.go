@@ -404,6 +404,10 @@ type ConnectionsConfig struct {
 	// uses `engine: postgres` (or the `postgresql` alias).
 	Postgres *PostgresConn `yaml:"postgres,omitempty"`
 
+	// Microsoft SQL Server connection. Required when any `databases:`
+	// entry uses `engine: mssql` (or the `sqlserver` alias).
+	Mssql *MssqlConn `yaml:"mssql,omitempty"`
+
 	// MongoDB connection. URI form (`mongodb://...`); host/port get
 	// rewritten at dial time when a `container` ref is set.
 	Mongodb *MongoConn `yaml:"mongodb,omitempty"`
@@ -448,6 +452,7 @@ type ConnectionsConfig struct {
 	//	  - { engine: postgres, name_template: "bi_{slug}", connection: analytics }
 	MysqlNamed         map[string]*MysqlConn    `yaml:"-"`
 	PostgresNamed      map[string]*PostgresConn `yaml:"-"`
+	MssqlNamed         map[string]*MssqlConn    `yaml:"-"`
 	MongodbNamed       map[string]*MongoConn    `yaml:"-"`
 	RedisNamed         map[string]*RedisConn    `yaml:"-"`
 	ElasticsearchNamed map[string]*EsConn       `yaml:"-"`
@@ -604,9 +609,10 @@ func (c *MysqlConn) UnmarshalYAML(node *yaml.Node) error {
 
 // JSONSchema for MysqlConn: scalar DSN OR full structured object.
 // sqlConnStructSchema reflects the structured-object form shared by the
-// MySQL and Postgres connection types — they carry the identical field
-// set, so the schema is generated once here. MySQL extras (charset,
-// collation) are layered on by mysqlStructSchema.
+// MySQL, Postgres and SQL Server connection types — they carry the
+// identical field set, so the schema is generated once here. The extras
+// (MySQL's charset/collation, SQL Server's collation and server-side
+// directories) are layered on by the per-engine struct schemas.
 func sqlConnStructSchema() *jsonschema.Schema {
 	r := &jsonschema.Reflector{Anonymous: true, ExpandedStruct: true, FieldNameTag: "yaml"}
 	return r.Reflect(&struct {
@@ -784,6 +790,112 @@ func (PostgresConn) JSONSchema() *jsonschema.Schema {
 // parsePostgresDSN fills cfg from a URL-form DSN.
 func parsePostgresDSN(dsn string, cfg *PostgresConn) error {
 	p, err := parseConnDSN(dsn, "postgres", "postgres(ql)://", "postgres", "postgresql")
+	if err != nil {
+		return err
+	}
+	applyDSNParts(p, &cfg.Host, &cfg.Port, &cfg.User, &cfg.Password)
+	return nil
+}
+
+// MssqlConn — Microsoft SQL Server. Same shape as PostgresConn plus a
+// collation and the two server-side directories the backup/restore
+// clone path writes into.
+type MssqlConn struct {
+	// Hostname or IP. Defaults to `127.0.0.1`. ContainerRef overrides
+	// it at dial time when set. There is no named-pipe or shared-memory
+	// mode: treeman speaks TDS over TCP only.
+	Host string `yaml:"host,omitempty"`
+
+	// TCP port. Defaults to 1433.
+	Port uint16 `yaml:"port,omitempty"`
+
+	// Login. Required. Needs `dbcreator` (CREATE/DROP DATABASE) plus
+	// BACKUP DATABASE and RESTORE DATABASE — in practice `sysadmin`,
+	// because RESTORE of a database that does not yet exist is a
+	// sysadmin-only operation.
+	User string `yaml:"user"`
+
+	// Password is either a literal value or a `$NAME` / `${NAME}`
+	// env-var reference. See MysqlConn.Password for the resolution
+	// order and the security warning about literals.
+	Password string `yaml:"password,omitempty"`
+
+	// Maximum open connections in the daemon's pool.
+	PoolMax uint32 `yaml:"pool_max,omitempty"`
+
+	// Collation for CREATE DATABASE (`Polish_CI_AS`,
+	// `Latin1_General_100_CI_AS`, …). Empty means the server's own
+	// default, which on a stock install is SQL_Latin1_General_CP1_CI_AS
+	// — rarely what a non-English application actually uses. Set this
+	// to whatever the real server uses: a clone that compares and
+	// orders text differently from production is an expensive
+	// difference to debug. Clones restored from a template inherit the
+	// template's collation and ignore this field.
+	Collation string `yaml:"collation,omitempty"`
+
+	// Directory, ON THE SERVER, that template `.bak` files are written
+	// to. Defaults to `SERVERPROPERTY('InstanceDefaultBackupPath')`.
+	// Set it when the service account cannot write there, or to put the
+	// backups on a different volume from the data files.
+	//
+	// Server-side, not treeman-side: with SQL Server in a container
+	// this is a path inside the container, and treeman never opens it.
+	BackupDir string `yaml:"backup_dir,omitempty"`
+
+	// Directory, ON THE SERVER, that restored `.mdf`/`.ldf` files are
+	// written to. Defaults to
+	// `SERVERPROPERTY('InstanceDefaultDataPath')`. Same server-side
+	// caveat as `backup_dir`.
+	DataDir      string `yaml:"data_dir,omitempty"`
+	ContainerRef `       yaml:",inline"`
+}
+
+// UnmarshalYAML accepts either a bare DSN string
+// (`sqlserver://user:pass@host:port`) or the structured object.
+// Mirrors MysqlConn — see its doc-comment for the trade-offs.
+func (c *MssqlConn) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind == yaml.ScalarNode {
+		return parseMssqlDSN(node.Value, c)
+	}
+	if node.Kind != yaml.MappingNode {
+		return fmt.Errorf("mssql connection (line %d): want a DSN string or mapping", node.Line)
+	}
+	type alias MssqlConn
+	return node.Decode((*alias)(c))
+}
+
+// mssqlStructSchema is sqlConnStructSchema plus the SQL-Server-only
+// knobs: the CREATE DATABASE collation and the two server-side
+// directories the clone path writes into.
+func mssqlStructSchema() *jsonschema.Schema {
+	r := &jsonschema.Reflector{Anonymous: true, ExpandedStruct: true, FieldNameTag: "yaml"}
+	return r.Reflect(&struct {
+		Host         string       `yaml:"host,omitempty"`
+		Port         uint16       `yaml:"port,omitempty"`
+		User         string       `yaml:"user"`
+		Password     string       `yaml:"password,omitempty"`
+		PoolMax      uint32       `yaml:"pool_max,omitempty"`
+		Collation    string       `yaml:"collation,omitempty"`
+		BackupDir    string       `yaml:"backup_dir,omitempty"`
+		DataDir      string       `yaml:"data_dir,omitempty"`
+		ContainerRef ContainerRef `yaml:",inline"`
+	}{})
+}
+
+// JSONSchema for MssqlConn: scalar DSN OR full structured object.
+func (MssqlConn) JSONSchema() *jsonschema.Schema {
+	return dsnOrStructSchema(
+		"DSN: `sqlserver://user:pass@host:port`. Equivalent to the structured form below.",
+		"Microsoft SQL Server connection — bare DSN string OR structured object.",
+		mssqlStructSchema(),
+	)
+}
+
+// parseMssqlDSN fills cfg from a URL-form DSN. `sqlserver://` is the
+// scheme go-mssqldb itself documents; `mssql://` is accepted because it
+// is what the engine alias is called.
+func parseMssqlDSN(dsn string, cfg *MssqlConn) error {
+	p, err := parseConnDSN(dsn, "mssql", "sqlserver://", "sqlserver", "mssql")
 	if err != nil {
 		return err
 	}

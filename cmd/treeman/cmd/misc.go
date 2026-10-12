@@ -409,7 +409,7 @@ func DbCmd() *cli.Command {
 					&cli.StringFlag{Name: "repo", Aliases: []string{"r"}},
 					&cli.StringFlag{
 						Name:  "engine",
-						Usage: "restrict the reset to one engine family (mysql, postgres, mongodb, redis, elasticsearch; aliases like mariadb/postgresql/valkey/dragonfly accepted)",
+						Usage: "restrict the reset to one engine family (mysql, postgres, mssql, mongodb, redis, elasticsearch; aliases like mariadb/postgresql/sqlserver/valkey/dragonfly accepted)",
 					},
 					&cli.BoolFlag{Name: "json"},
 					&cli.BoolFlag{
@@ -452,7 +452,7 @@ func DbCmd() *cli.Command {
 					&cli.StringFlag{Name: "repo", Aliases: []string{"r"}},
 					&cli.StringFlag{
 						Name:  "engine",
-						Usage: "restrict the save to one engine family (mysql, postgres, mongodb, redis, elasticsearch; aliases like mariadb/postgresql/valkey/dragonfly accepted)",
+						Usage: "restrict the save to one engine family (mysql, postgres, mssql, mongodb, redis, elasticsearch; aliases like mariadb/postgresql/sqlserver/valkey/dragonfly accepted)",
 					},
 					&cli.BoolFlag{Name: "json"},
 					&cli.BoolFlag{
@@ -710,6 +710,7 @@ func ConfigCmd() *cli.Command {
 						_, _ = fmt.Fprintln(ui.Out, "# resolved connections")
 						printResolved("mysql", r.Mysql)
 						printResolved("postgres", r.Postgres)
+						printResolved("mssql", r.Mssql)
 						printResolved("mongodb", r.Mongodb)
 						printResolved("redis", r.Redis)
 						printResolved("elasticsearch", r.Elasticsearch)
@@ -1478,7 +1479,7 @@ func InitCmd() *cli.Command {
 			},
 			&cli.StringFlag{
 				Name:  "engine",
-				Usage: "comma-separated engines to activate in databases: (e.g. mysql,postgres,redis) — emits minimal blocks when detection found no framework",
+				Usage: "comma-separated engines to activate in databases: (e.g. mysql,postgres,mssql,redis) — emits minimal blocks when detection found no framework",
 			},
 			&cli.BoolFlag{
 				Name:  "interactive",
@@ -1637,11 +1638,12 @@ func pickEngines() ([]string, error) {
 	items := []string{
 		"mysql      — MySQL / MariaDB / TiDB",
 		"postgres   — PostgreSQL",
+		"mssql      — Microsoft SQL Server",
 		"mongodb    — MongoDB",
 		"redis      — Redis / Valkey / Dragonfly",
 		"elasticsearch — Elasticsearch / OpenSearch",
 	}
-	values := []string{"mysql", "postgres", "mongodb", "redis", "elasticsearch"}
+	values := []string{"mysql", "postgres", "mssql", "mongodb", "redis", "elasticsearch"}
 	res, err := tui.Select(items, tui.Options{
 		Prompt: "engines to activate in databases: (space marks, enter confirms, esc = none)",
 		Values: values,

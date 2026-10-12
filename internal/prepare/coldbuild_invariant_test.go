@@ -29,6 +29,7 @@ func TestColdBuildEmitsDropEventPerEngine(t *testing.T) {
 	labels := []string{
 		"mysqlColdBuild:",
 		"pgColdBuild:",
+		"mssqlColdBuild:",
 		"mongoColdBuild:",
 		"redisColdBuild:",
 		"esColdBuild:",
@@ -93,7 +94,7 @@ func TestColdBuildUsesSlugAnchoredDrop(t *testing.T) {
 	// `DropPrefixFiltered` (which take a third predicate arg) don't
 	// false-positive on the bare 2-arg form.
 	banned := regexp.MustCompile(`drv\.(DropMatching|DropPrefix)\(ctx, [^,]+\)`)
-	labels := []string{"mysqlColdBuild:", "pgColdBuild:", "mongoColdBuild:", "redisColdBuild:", "esColdBuild:"}
+	labels := []string{"mysqlColdBuild:", "pgColdBuild:", "mssqlColdBuild:", "mongoColdBuild:", "redisColdBuild:", "esColdBuild:"}
 	for i, lbl := range labels {
 		t.Run(strings.TrimSuffix(lbl, ":"), func(t *testing.T) {
 			block := coldBuildBlock(t, body, lbl, labels, i)

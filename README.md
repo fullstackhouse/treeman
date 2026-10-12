@@ -5,9 +5,10 @@ databases, search indices, and parallel test clones for each git
 worktree — torn down on delete, kept in sync as your migrations and
 fixtures change. Language- and framework-agnostic.
 
-Pure wire-protocol DB access (Go `database/sql` for MySQL +
-PostgreSQL, the official Mongo / Redis / Elasticsearch SDKs) — no
-shelling out to `mysql` / `psql` / `mongosh` / `redis-cli`. A single
+Pure wire-protocol DB access (Go `database/sql` for MySQL,
+PostgreSQL + SQL Server, the official Mongo / Redis / Elasticsearch
+SDKs) — no shelling out to `mysql` / `psql` / `sqlcmd` / `mongosh` /
+`redis-cli`. A single
 user-mode daemon, a thin CLI client, and a SQLite-backed event log.
 
 ---
@@ -28,14 +29,24 @@ commands you type.
 |---|---|---|
 | MySQL | MariaDB, TiDB | Separate database |
 | PostgreSQL | — | Separate database |
+| SQL Server | — | Separate database |
 | MongoDB | — | Separate database |
 | Redis | Valkey, DragonflyDB | Key-prefix in DB 0 (cluster-safe, no 16-DB cap) |
 | Elasticsearch | OpenSearch | Index-name prefix |
 
 Variants are first-class aliases — declare `engine: mariadb`, `tidb`,
-`valkey`, `dragonfly`, or `opensearch` and treeman routes it to the
-parent engine's driver (Valkey/DragonflyDB ride the Redis wire
-protocol).
+`sqlserver`, `valkey`, `dragonfly`, or `opensearch` and treeman routes
+it to the parent engine's driver (Valkey/DragonflyDB ride the Redis
+wire protocol).
+
+SQL Server clones through BACKUP + RESTORE, the only database copy a
+client can drive there — so a template is the template database plus
+one `.bak` file beside it, captured once and restored per clone. Two
+consequences worth knowing before you declare one: the connection
+needs BACKUP/RESTORE rights (`sysadmin` in practice, since restoring a
+database that does not yet exist is sysadmin-only), and `dump:` is
+rejected, because RESTORE reads a path on the *server* — load a dump
+from `seed:` instead.
 
 ## Features
 

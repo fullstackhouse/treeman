@@ -56,17 +56,24 @@ connections:
     port: 5432
     user: postgres
     password: $PGPASSWORD
+  mssql:
+    host: 127.0.0.1
+    port: 1433
+    user: sa
+    password: $MSSQL_SA_PASSWORD
+    collation: Polish_CI_AS              # CREATE DATABASE collation; default is the server's own
+    backup_dir: /var/opt/mssql/data      # ON THE SERVER: where template .bak files go
   mongodb: { uri: "mongodb://127.0.0.1:27017" }
   redis:   { url: "redis://127.0.0.1:6379" }
   elasticsearch: { url: "http://127.0.0.1:9200" }
 
 databases:
-  - engine: mysql                          # mysql|mariadb|tidb|postgres|postgresql|mongodb|redis|elasticsearch|opensearch
+  - engine: mysql                          # mysql|mariadb|tidb|postgres|postgresql|mssql|sqlserver|mongodb|redis|elasticsearch|opensearch
     name_template: "myapp_testing_{slug}"
     dump: { path: storage/dumps/seed.sql.gz }
-    fanout: 0                              # 0 = safe per-engine default (mysql 4, pg GOMAXPROCS, mongo 6, es 8).
+    fanout: 0                              # 0 = safe per-engine default (mysql 4, pg GOMAXPROCS, mssql 4, mongo 6, es 8).
                                            # raise only if the server is provisioned (max_connections bumped, etc.).
-    prewarm: 0                             # Postgres only: keep N spare clones pre-restored from the cached
+    prewarm: 0                             # Postgres, MySQL, SQL Server: keep N spare clones pre-restored from the cached
                                            # template; a cache-hit create claims one via ALTER DATABASE … RENAME
                                            # (milliseconds, size-independent) instead of a full template copy.
                                            # The pool replenishes in the background and is dropped with its
@@ -493,6 +500,7 @@ Supported flavours per engine:
 |---|---|
 | MySQL | `DB_TEST_*` → `DB_*` (Laravel); `MYSQL_URL`; `SPRING_DATASOURCE_URL` (jdbc:mysql://…) + `SPRING_DATASOURCE_{USERNAME,PASSWORD}`; `MYSQL_PASSWORD` / `MYSQL_PWD` |
 | Postgres | `DB_TEST_*` → `DB_*` (Laravel); `DATABASE_URL`; `PG*` (`PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`); `SPRING_DATASOURCE_URL` (jdbc:postgresql://…) |
+| SQL Server | `DB_TEST_*` → `DB_*` (Laravel); `MSSQL_URL`; `DATABASE_URL` (`sqlserver://…`); `SPRING_DATASOURCE_URL` (jdbc:sqlserver://…); `MSSQL_SA_PASSWORD` / `SA_PASSWORD` |
 | MongoDB | `MONGODB_URI` / `MONGO_URL` / `DATABASE_URL`; `MONGO_DB_HOST` + `MONGO_DB_PORT` composed; `SPRING_DATA_MONGODB_*` |
 | Redis | `REDIS_URL`; `REDIS_HOST` + `REDIS_PORT` + `REDIS_PASSWORD` composed; literal `null` / `(null)` passwords skipped |
 | Elasticsearch | `ELASTICSEARCH_URL` / `ELASTICSEARCH_HOSTS` (auto-prefixes `http://` if missing) |

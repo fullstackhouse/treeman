@@ -106,18 +106,41 @@ in `registry_drivers.go`). Everything else — `engineconn.Connect`,
 `engineconn.Configured`, prepare, teardown, GC, and stale-worktree
 recovery — is registry-driven and picks a new engine up for free.
 
-Checklist for a new engine family (≤4 touchpoints, #47):
+Checklist for a new engine family (#47):
 
 1. **Driver package** `internal/db/<engine>`: dial + the `Conn`
    primitives (Drop/Exists/ListMatching/DropMatching/…).
 2. **Registry entry** in `engineconn/registry_drivers.go`: a
-   `Configured` field-check and a `Connect` dialer.
-3. **Config**: a `ConnectionsConfig` field, a `databases[].engine`
-   alias pair in `engine.Known` + `engine.Canonical`, and a
-   `validate.go` rule if the family can't support some modes.
+   `Configured` field-check and a `Connect` dialer, plus the
+   `<engine>Conn` wrapper in `engineconn.go` and — if the driver can
+   claim a pre-warmed spare — the `SnapshotCreator`/`SpareClaimer`
+   methods and a `config.PrewarmCapableEngines` entry.
+3. **Config**: a `ConnectionsConfig` field + its `*Named` map, a
+   `databases[].engine` alias pair in `engine.Known` +
+   `engine.Canonical`, the family arms in `connections.go`
+   (`UnmarshalYAML`, `Resolve<Family>`, `familyShape`, `hasNamedBlock`,
+   `namedNames`), `schema.connFamilyDefs`, and a `validate.go` rule if
+   the family can't support some modes.
 4. **Extras** (only what applies): a patcher driver if config files
    need rewriting, an `initgen` preset if a framework pairs with it,
-   docker-tier e2e under `e2e/<engine>`.
+   docker-tier e2e under `e2e/<engine>` (registered in the justfile's
+   `BATCHES[engines]`).
+
+The registry covers prepare, teardown, GC and recovery. Four places
+switch on the CONCRETE adapter type instead and need an arm of their
+own for a name-scoped engine — a missing one fails silently, not
+loudly:
+
+- `prepare.go`'s `prepareFamily` plus a `prepare<Engine>` and
+  `<engine>ColdBuildSteps` (and the `fanOutLimits` /
+  `innerConnsPerRestore` entries that size its fan-out);
+- `branchstate.go`'s `<engine>NS` adapter and `connectBranchEngine`
+  arm, or `branch_scoped` quietly no-ops;
+- `branchreap.go`'s `untrackedMarker` entry and
+  `listDurableCandidates` arm, or untracked durables leak forever;
+- `resolve.go`'s `Resolved` field, `ApplyEnvCredentials` copy-back and
+  container-env password filler, or a `password: $NAME` ref resolves
+  to empty.
 
 The jsonschema `engine` enum is GENERATED from `engine.Known`
 (`just sync-schema`) — adding an alias cannot half-land. History:
