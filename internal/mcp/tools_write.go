@@ -204,7 +204,7 @@ func prepareTool(ctx context.Context, _ *mcpsdk.CallToolRequest, in prepareIn) (
 type dbResetIn struct {
 	Worktree string `json:"worktree,omitempty" jsonschema:"defaults to cwd's worktree"`
 	Repo     string `json:"repo,omitempty"`
-	Engine   string `json:"engine,omitempty"   jsonschema:"restrict to one engine family: mysql|postgres|mongodb|redis|elasticsearch (aliases like mariadb/postgresql/valkey/dragonfly accepted); omit to reset all branch_scoped databases"`
+	Engine   string `json:"engine,omitempty"   jsonschema:"restrict to one engine family: mysql|postgres|mssql|mongodb|redis|elasticsearch (aliases like mariadb/postgresql/sqlserver/valkey/dragonfly accepted); omit to reset all branch_scoped databases"`
 	DryRun   bool   `json:"dry_run,omitempty"  jsonschema:"plan only — return the active-namespace + current-branch durable names that WOULD be dropped without performing the reset"`
 	Ack      bool   `json:"ack,omitempty"      jsonschema:"skip the elicitation confirmation prompt"`
 }
@@ -249,7 +249,7 @@ func dbResetTool(ctx context.Context, req *mcpsdk.CallToolRequest, in dbResetIn)
 type dbSaveIn struct {
 	Worktree string `json:"worktree,omitempty" jsonschema:"defaults to cwd's worktree"`
 	Repo     string `json:"repo,omitempty"`
-	Engine   string `json:"engine,omitempty"   jsonschema:"restrict to one engine family: mysql|postgres|mongodb|redis|elasticsearch (aliases like mariadb/postgresql/valkey/dragonfly accepted); omit to save all branch_scoped databases"`
+	Engine   string `json:"engine,omitempty"   jsonschema:"restrict to one engine family: mysql|postgres|mssql|mongodb|redis|elasticsearch (aliases like mariadb/postgresql/sqlserver/valkey/dragonfly accepted); omit to save all branch_scoped databases"`
 }
 type dbSaveOut struct {
 	Saved []prepare.BranchScopedSave `json:"saved" jsonschema:"per-database result; a non-empty skipped field explains why no capture ran (no marker, missing active, or unchanged watermark)"`

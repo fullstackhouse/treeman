@@ -81,6 +81,12 @@ func engineProbes(cfg *config.Config) []engineProbe {
 			engineProbe{name: "postgres", ref: p.ContainerRef, host: orDefault(p.Host, "127.0.0.1"), port: orDefaultPort(p.Port, 5432)},
 		)
 	}
+	if ms := c.Mssql; ms != nil {
+		out = append(
+			out,
+			engineProbe{name: "mssql", ref: ms.ContainerRef, host: orDefault(ms.Host, "127.0.0.1"), port: orDefaultPort(ms.Port, 1433)},
+		)
+	}
 	if mg := c.Mongodb; mg != nil {
 		out = append(out, engineProbe{name: "mongodb", ref: mg.ContainerRef, url: mg.URI})
 	}

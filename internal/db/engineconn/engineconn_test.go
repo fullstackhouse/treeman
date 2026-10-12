@@ -14,8 +14,8 @@ import (
 // block. Connect's not-configured path must return (nil, false, nil).
 func TestConfiguredMatchesConnect(t *testing.T) {
 	families := []engine.Family{
-		engine.FamilyMySQL, engine.FamilyPostgres, engine.FamilyMongo,
-		engine.FamilyRedis, engine.FamilyES,
+		engine.FamilyMySQL, engine.FamilyPostgres, engine.FamilyMSSQL,
+		engine.FamilyMongo, engine.FamilyRedis, engine.FamilyES,
 	}
 	empty := &config.Config{}
 	for _, fam := range families {
@@ -31,6 +31,7 @@ func TestConfiguredMatchesConnect(t *testing.T) {
 	full := &config.Config{Connections: config.ConnectionsConfig{
 		Mysql:         &config.MysqlConn{Host: "127.0.0.1", Port: 1, User: "u"},
 		Postgres:      &config.PostgresConn{Host: "127.0.0.1", Port: 1, User: "u"},
+		Mssql:         &config.MssqlConn{Host: "127.0.0.1", Port: 1, User: "u"},
 		Mongodb:       &config.MongoConn{URI: "mongodb://127.0.0.1:1"},
 		Redis:         &config.RedisConn{URL: "redis://127.0.0.1:1"},
 		Elasticsearch: &config.EsConn{URL: "http://127.0.0.1:1"},

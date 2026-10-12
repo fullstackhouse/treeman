@@ -57,6 +57,7 @@ daemon:
 connections:
     mysql: '...'
     postgres: '...'
+    mssql: '...'
     mongodb: '...'
     redis: '...'
     elasticsearch: '...'
@@ -154,6 +155,7 @@ include:
 connections:
     mysql: '...'
     postgres: '...'
+    mssql: '...'
     mongodb: '...'
     redis: '...'
     elasticsearch: '...'
@@ -530,6 +532,11 @@ create clones, dump templates.
 PostgreSQL connection. Required when any `databases:` entry
 uses `engine: postgres` (or the `postgresql` alias).
 
+#### `mssql` *(one of: [MssqlConn](#mssqlconn), map of name → [MssqlConn](#mssqlconn))*
+
+Microsoft SQL Server connection. Required when any `databases:`
+entry uses `engine: mssql` (or the `sqlserver` alias).
+
 #### `mongodb` *(one of: [MongoConn](#mongoconn), map of name → [MongoConn](#mongoconn))*
 
 MongoDB connection. URI form (`mongodb://...`); host/port get
@@ -662,7 +669,7 @@ for `redis` (same wire protocol, same key-prefix scoping).
 The rendered schema's enum is injected from engine.Known by
 schema.Reflect, so the alias list lives in exactly one place.
 
-_Allowed: `mysql`, `mariadb`, `tidb`, `postgres`, `postgresql`, `mongodb`, `redis`, `valkey`, `dragonfly`, `elasticsearch`, `opensearch`, `s3`, `sqlite`, `duckdb`_
+_Allowed: `mysql`, `mariadb`, `tidb`, `postgres`, `postgresql`, `mssql`, `sqlserver`, `mongodb`, `redis`, `valkey`, `dragonfly`, `elasticsearch`, `opensearch`, `s3`, `sqlite`, `duckdb`_
 
 #### `connection` *(string)*
 
@@ -1090,6 +1097,10 @@ declared count are a config error caught at load time.
 ### MongoConn
 
 mongodb connection — bare URL string OR structured object.
+
+### MssqlConn
+
+Microsoft SQL Server connection — bare DSN string OR structured object.
 
 ### MysqlConn
 

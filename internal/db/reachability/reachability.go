@@ -123,6 +123,8 @@ func defaultPort(scheme string) (uint16, bool) {
 		return 3306, true
 	case "postgres", "postgresql":
 		return 5432, true
+	case "sqlserver", "mssql":
+		return 1433, true
 	}
 	return 0, false
 }

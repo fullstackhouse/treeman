@@ -17,6 +17,8 @@ func TestCanonical(t *testing.T) {
 		"tidb":          {FamilyMySQL, true},
 		"postgres":      {FamilyPostgres, true},
 		"postgresql":    {FamilyPostgres, true},
+		"mssql":         {FamilyMSSQL, true},
+		"sqlserver":     {FamilyMSSQL, true},
 		"mongodb":       {FamilyMongo, true},
 		"redis":         {FamilyRedis, true},
 		"valkey":        {FamilyRedis, true},
@@ -43,6 +45,7 @@ func TestFamilyScope(t *testing.T) {
 	cases := map[Family]Scope{
 		FamilyMySQL:    ScopeName,
 		FamilyPostgres: ScopeName,
+		FamilyMSSQL:    ScopeName,
 		FamilyMongo:    ScopeName,
 		FamilyRedis:    ScopePrefix,
 		FamilyES:       ScopePrefix,

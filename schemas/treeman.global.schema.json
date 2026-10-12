@@ -124,6 +124,21 @@
           ],
           "description": "PostgreSQL connection. Required when any `databases:` entry\nuses `engine: postgres` (or the `postgresql` alias)."
         },
+        "mssql": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MssqlConn"
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/MssqlConn"
+              },
+              "type": "object",
+              "description": "Named connection blocks — a `databases[].connection` selector picks one"
+            }
+          ],
+          "description": "Microsoft SQL Server connection. Required when any `databases:`\nentry uses `engine: mssql` (or the `sqlserver` alias)."
+        },
         "mongodb": {
           "anyOf": [
             {
@@ -288,6 +303,8 @@
             "tidb",
             "postgres",
             "postgresql",
+            "mssql",
+            "sqlserver",
             "mongodb",
             "redis",
             "valkey",
@@ -706,6 +723,64 @@
         }
       ],
       "description": "mongodb connection — bare URL string OR structured object."
+    },
+    "MssqlConn": {
+      "oneOf": [
+        {
+          "type": "string",
+          "description": "DSN: `sqlserver://user:pass@host:port`. Equivalent to the structured form below."
+        },
+        {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "properties": {
+            "host": {
+              "type": "string"
+            },
+            "port": {
+              "type": "integer"
+            },
+            "user": {
+              "type": "string"
+            },
+            "password": {
+              "type": "string"
+            },
+            "pool_max": {
+              "type": "integer"
+            },
+            "collation": {
+              "type": "string"
+            },
+            "backup_dir": {
+              "type": "string"
+            },
+            "data_dir": {
+              "type": "string"
+            },
+            "container": {
+              "type": "string"
+            },
+            "compose_service": {
+              "type": "string"
+            },
+            "compose_project": {
+              "type": "string"
+            },
+            "container_engine": {
+              "type": "string"
+            },
+            "container_network": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "user"
+          ]
+        }
+      ],
+      "description": "Microsoft SQL Server connection — bare DSN string OR structured object."
     },
     "MysqlConn": {
       "oneOf": [

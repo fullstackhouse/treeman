@@ -87,6 +87,7 @@ func injectEngineEnum(s *jsonschema.Schema) {
 var connFamilyDefs = map[string]string{
 	"mysql":         "MysqlConn",
 	"postgres":      "PostgresConn",
+	"mssql":         "MssqlConn",
 	"mongodb":       "MongoConn",
 	"redis":         "RedisConn",
 	"elasticsearch": "EsConn",

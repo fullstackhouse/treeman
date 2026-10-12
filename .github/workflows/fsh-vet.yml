@@ -56,7 +56,22 @@ jobs:
           # Files we are allowed to add or change on top of upstream. Anything
           # else means we have started editing his tree — which is a decision,
           # not an accident, so it has to be made here, in this list.
+          #
+          # P4, the SQL Server driver, is the first entry that edits upstream's
+          # own files rather than only adding ours: an engine family touches the
+          # engine registry, the config schema, prepare, resolve and the docs.
+          # The FORK.md row carries the why and the drop-when; this list carries
+          # the blast radius. Keep the two in step.
           allowed='^(FORK\.md|PATCHES\.md|\.fsh/|\.github/workflows/fsh-)'
+          allowed="$allowed"'|^(internal/db/mssql/|e2e/mssql/|internal/db/ident/mssql\.go)'
+          allowed="$allowed"'|^(go\.mod|go\.sum|justfile|README\.md|docs/|schemas/|e2e/README\.md)'
+          allowed="$allowed"'|^internal/(engine/engine(_test)?\.go|schema/schema\.go)'
+          allowed="$allowed"'|^internal/config/(config|connections|validate|connections_test|dsn_test)\.go'
+          allowed="$allowed"'|^internal/db/(engineconn/|reachability/reachability\.go)'
+          allowed="$allowed"'|^internal/prepare/(prepare|branchstate|branchreap|coldbuild_invariant_test)\.go'
+          allowed="$allowed"'|^internal/(resolve/resolve\.go|snapshot/orphans\.go|initgen/initgen\.go)'
+          allowed="$allowed"'|^internal/mcp/(tools_engine|tools_write|server)\.go'
+          allowed="$allowed"'|^cmd/treeman/cmd/(misc|doctor_engines)\.go'
           base="$(git merge-base HEAD upstream/master)"
           unexpected="$(git diff --name-only "$base"..HEAD | grep -Ev "$allowed" || true)"
           if [ -n "$unexpected" ]; then

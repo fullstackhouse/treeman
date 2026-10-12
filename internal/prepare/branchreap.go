@@ -272,6 +272,7 @@ func isBSHash(s string) bool {
 var untrackedMarker = map[string]string{
 	"mysql":         "_tmbs_",
 	"postgres":      "_tmbs_",
+	"mssql":         "_tmbs_",
 	"mongodb":       "_tmbs_",
 	"s3":            "tmbs-",
 	"elasticsearch": esDurableMarker,
@@ -307,6 +308,8 @@ func listDurableCandidates(ctx context.Context, drv nsDriver, marker string) ([]
 	case mysqlNS:
 		names, err = a.d.ListMatching(ctx, marker)
 	case postgresNS:
+		names, err = a.d.ListMatching(ctx, marker)
+	case mssqlNS:
 		names, err = a.d.ListMatching(ctx, marker)
 	case mongoNS:
 		names, err = a.d.ListMatching(ctx, marker)

@@ -80,13 +80,13 @@ func buildServer() (*mcpsdk.Server, []*toolEntry) {
 // into the conversation and the highest-leverage entry points, so an
 // agent doesn't fall back to raw `git`/`psql` when treeman owns the
 // flow. Keep it short — clients prepend it to the model's context.
-const serverInstructions = `Treeman gives every git worktree its own ephemeral MySQL/Postgres/Mongo/Redis/ES instance, cold-built from a dump + migrations and cached as a template for fast reuse.
+const serverInstructions = `Treeman gives every git worktree its own ephemeral MySQL/Postgres/SQL Server/Mongo/Redis/ES instance, cold-built from a dump + migrations and cached as a template for fast reuse.
 
 REACH FOR TREEMAN when the user mentions: worktree, branch-scoped DB, snapshot/template, prepare, dump+migrate+seed, ` + "`.treeman.yaml`" + `, treemand, finalize, fingerprint, slug.
 
 Only a few core tools load up front (doctor, status_overview, worktree_create, worktree_list, prepare_run, logs_query). For everything else — config, engine access, snapshots, registry, daemon control, init, the rest of the worktree/logs surface, and the guided multi-step prompts — call the ` + "`tools`" + ` tool: action=list catalogs every capability by category (with a routing guide), action=enable loads the ones the task needs.
 
-Prefer treeman over raw ` + "`git worktree`, `psql`, `mysql`, `mongosh`, `redis-cli`, `curl`" + `: it reaches every engine through its own configured, authenticated drivers and keeps SQLite + engine state in sync — bypassing it desyncs them. Destructive tools take dry_run=true to preview.`
+Prefer treeman over raw ` + "`git worktree`, `psql`, `mysql`, `sqlcmd`, `mongosh`, `redis-cli`, `curl`" + `: it reaches every engine through its own configured, authenticated drivers and keeps SQLite + engine state in sync — bypassing it desyncs them. Destructive tools take dry_run=true to preview.`
 
 // Serve boots the MCP server on stdio and blocks until the client
 // disconnects or ctx is cancelled. Returns nil on clean shutdown.

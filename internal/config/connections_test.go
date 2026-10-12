@@ -191,6 +191,9 @@ func TestSingleConnBlockWithContainerRef(t *testing.T) {
 		{"postgres", `{host: 127.0.0.1, user: app, ` + ref + `}`, func(c *ConnectionsConfig) (bool, int) {
 			return c.Postgres != nil && c.Postgres.Container == "app-db", len(c.PostgresNamed)
 		}},
+		{"mssql", `{host: 127.0.0.1, port: 1433, user: sa, ` + ref + `}`, func(c *ConnectionsConfig) (bool, int) {
+			return c.Mssql != nil && c.Mssql.Container == "app-db", len(c.MssqlNamed)
+		}},
 		{"mongodb", `{uri: "mongodb://localhost:27017", ` + ref + `}`, func(c *ConnectionsConfig) (bool, int) {
 			return c.Mongodb != nil && c.Mongodb.Container == "app-db", len(c.MongodbNamed)
 		}},

@@ -1,0 +1,31 @@
+# SQL Server e2e fixture. Port 11433 is outside common conflicts so a
+# developer's local instance on 1433 doesn't block the test run.
+#
+# MSSQL_MEMORY_LIMIT_MB matters: SQL Server's default is "all of it",
+# which on a 2-CPU/7 GB runner shared with a Go build is how the kernel
+# ends up choosing between them. Developer edition because Express caps
+# a database at 10 GB and refuses backup compression.
+services:
+  mssql:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: treeman-e2e-mssql
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "treemanE2E!pw1"
+      MSSQL_PID: Developer
+      MSSQL_MEMORY_LIMIT_MB: "2048"
+    ports:
+      - "11433:1433"
+    healthcheck:
+      # -C trusts the self-signed certificate the server generates for
+      # itself; without it sqlcmd 18 refuses to connect and the
+      # healthcheck never passes.
+      test:
+        [
+          "CMD-SHELL",
+          "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -C -Q 'SELECT 1' || exit 1",
+        ]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+      start_period: 20s

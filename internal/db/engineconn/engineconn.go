@@ -19,6 +19,7 @@ import (
 	"github.com/stubbedev/treeman/internal/config"
 	dbes "github.com/stubbedev/treeman/internal/db/es"
 	dbmongo "github.com/stubbedev/treeman/internal/db/mongo"
+	dbmssql "github.com/stubbedev/treeman/internal/db/mssql"
 	dbmysql "github.com/stubbedev/treeman/internal/db/mysql"
 	dbpostgres "github.com/stubbedev/treeman/internal/db/postgres"
 	dbredis "github.com/stubbedev/treeman/internal/db/redis"
@@ -80,6 +81,9 @@ func NewPostgresConn(d *dbpostgres.Driver) Conn { return postgresConn{d} }
 // NewMySQLConn is NewPostgresConn for MySQL.
 func NewMySQLConn(d *dbmysql.Driver) Conn { return mysqlConn{d} }
 
+// NewMSSQLConn is NewPostgresConn for SQL Server.
+func NewMSSQLConn(d *dbmssql.Driver) Conn { return mssqlConn{d} }
+
 func (c postgresConn) CreateSnapshot(ctx context.Context, template, target string) error {
 	return c.d.SnapshotRestore(ctx, template, target)
 }
@@ -94,6 +98,53 @@ func (c mysqlConn) CreateSnapshot(ctx context.Context, template, target string) 
 
 func (c mysqlConn) ClaimSpare(ctx context.Context, spare, target string) error {
 	return c.d.SnapshotRestore(ctx, spare, target)
+}
+
+func (c mssqlConn) CreateSnapshot(ctx context.Context, template, target string) error {
+	return c.d.SnapshotRestore(ctx, template, target)
+}
+
+// ClaimSpare renames the spare onto the target, like Postgres: a
+// catalog-only ALTER DATABASE … MODIFY NAME rather than another
+// restore. Cheap enough to be worth the spare pool at all — a restore
+// copies every page.
+func (c mssqlConn) ClaimSpare(ctx context.Context, spare, target string) error {
+	return c.d.RenameDatabase(ctx, spare, target)
+}
+
+type mssqlConn struct{ d *dbmssql.Driver }
+
+func (c mssqlConn) Close() error { return c.d.Close() }
+func (c mssqlConn) EngineVersion(ctx context.Context) (string, error) {
+	return c.d.EngineVersion(ctx)
+}
+
+func (c mssqlConn) Exists(ctx context.Context, n string) (bool, error) {
+	return c.d.DatabaseExists(ctx, n)
+}
+
+func (c mssqlConn) DropMatching(ctx context.Context, n string) (int, error) {
+	dropped, err := c.d.DropMatching(ctx, n)
+	return len(dropped), err
+}
+
+func (c mssqlConn) DropSnapshot(ctx context.Context, n string) error {
+	return c.d.DropSnapshot(ctx, n)
+}
+
+func (c mssqlConn) ListMatching(ctx context.Context, p string) ([]string, error) {
+	return c.d.ListMatching(ctx, p)
+}
+
+// SizeKB sums the database's data and log files. sys.master_files is
+// server-wide, so unlike DB_NAME-scoped alternatives it answers for a
+// database this connection is not inside; `size` is in 8 KiB pages.
+func (c mssqlConn) SizeKB(ctx context.Context, n string) int64 {
+	var size int64
+	_ = c.d.DB.QueryRowContext(ctx,
+		`SELECT ISNULL(SUM(CONVERT(bigint, size)), 0) * 8
+		 FROM sys.master_files WHERE database_id = DB_ID(@p1)`, n).Scan(&size)
+	return size
 }
 
 type mysqlConn struct{ d *dbmysql.Driver }

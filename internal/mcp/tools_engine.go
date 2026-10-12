@@ -28,6 +28,7 @@ import (
 	dbes "github.com/stubbedev/treeman/internal/db/es"
 	"github.com/stubbedev/treeman/internal/db/ident"
 	dbmongo "github.com/stubbedev/treeman/internal/db/mongo"
+	dbmssql "github.com/stubbedev/treeman/internal/db/mssql"
 	dbmysql "github.com/stubbedev/treeman/internal/db/mysql"
 	dbpostgres "github.com/stubbedev/treeman/internal/db/postgres"
 	dbredis "github.com/stubbedev/treeman/internal/db/redis"
@@ -49,7 +50,7 @@ func registerEngineReadTools(srv *mcpsdk.Server) {
 
 	addTool(srv, &mcpsdk.Tool{
 		Name:        "db_schema_dump",
-		Description: "Dump the live schema for ONE database — mysql/postgres: CREATE TABLEs, mongo: collection list + samples, ES: index mapping, redis: SCAN-driven key summary. Use to reason about live shape vs. what migrations expect. db = the rendered per-worktree name (find via worktree_show or snapshots_inspect). Capped at max_tables (default 200).",
+		Description: "Dump the live schema for ONE database — mysql/postgres: CREATE TABLEs, mssql: tables + columns, mongo: collection list + samples, ES: index mapping, redis: SCAN-driven key summary. Use to reason about live shape vs. what migrations expect. db = the rendered per-worktree name (find via worktree_show or snapshots_inspect). Capped at max_tables (default 200).",
 		Annotations: readOnlyAnno("Dump live schema", true),
 	}, dbSchemaDumpTool)
 
@@ -79,7 +80,7 @@ func registerEngineReadTools(srv *mcpsdk.Server) {
 
 	addTool(srv, &mcpsdk.Tool{
 		Name:        "connection_probe",
-		Description: "Dry-test a connection string against an engine without writing it to .treeman.yaml. Tightens the setup loop — iterate on credentials, observe reachable/version/latency, then commit via config_set. dsn forms: mysql://user:pw@host:port, postgres://…, mongodb://…, redis://…, http(s)://…(ES). Omit dsn to probe the repo's currently-configured connection.",
+		Description: "Dry-test a connection string against an engine without writing it to .treeman.yaml. Tightens the setup loop — iterate on credentials, observe reachable/version/latency, then commit via config_set. dsn forms: mysql://user:pw@host:port, postgres://…, sqlserver://…, mongodb://…, redis://…, http(s)://…(ES). Omit dsn to probe the repo's currently-configured connection.",
 		Annotations: readOnlyAnno("Probe connection", true),
 	}, connectionProbeTool)
 
@@ -99,7 +100,7 @@ func registerEngineWriteTools(srv *mcpsdk.Server) {
 
 	addTool(srv, &mcpsdk.Tool{
 		Name:        "db_dump",
-		Description: "Refresh the seed dump used for cold builds — runs mysqldump / pg_dump / mongodump / ES scroll-bulk. Commit the new file then trigger prepare_run. Redis intentionally not implemented (uses a seed step, not a dump). output_dir defaults to <repo>/storage/dumps.",
+		Description: "Refresh the seed dump used for cold builds — runs mysqldump / pg_dump / mongodump / ES scroll-bulk. Commit the new file then trigger prepare_run. Redis and mssql intentionally not implemented (redis cold-builds from a seed step, and SQL Server has no client-side dump format at all). output_dir defaults to <repo>/storage/dumps.",
 		Annotations: writeAnno("Dump database", false, false, true),
 	}, dbDumpTool)
 }
@@ -132,7 +133,7 @@ func engineStatusTool(ctx context.Context, _ *mcpsdk.CallToolRequest, in engineS
 	// written to distinct slice indices (no shared mutation) and the
 	// fixed order is preserved.
 	probes := []func(context.Context, *config.Config) engineProbeResult{
-		probeMySQL, probePostgres, probeMongo, probeRedis, probeES, probeS3,
+		probeMySQL, probePostgres, probeMssql, probeMongo, probeRedis, probeES, probeS3,
 	}
 	results := make([]engineProbeResult, len(probes))
 	var wg sync.WaitGroup
@@ -179,6 +180,28 @@ func probePostgres(ctx context.Context, cfg *config.Config) engineProbeResult {
 	r.Reachable = true
 	r.Version, _ = drv.EngineVersion(ctx)
 	dbs, _ := listPostgresDatabases(ctx, drv)
+	r.Detail = databasesDetail(dbs)
+	return r
+}
+
+func probeMssql(ctx context.Context, cfg *config.Config) engineProbeResult {
+	r := engineProbeResult{Engine: "mssql"}
+	if cfg.Connections.Mssql == nil {
+		return r
+	}
+	r.Configured = true
+	drv, err := dbmssql.Connect(ctx, *cfg.Connections.Mssql)
+	if err != nil {
+		r.Error = err.Error()
+		return r
+	}
+	defer func() { _ = drv.Close() }()
+	r.Reachable = true
+	r.Version, _ = drv.EngineVersion(ctx)
+	// ListMatching("") already excludes the four system databases
+	// (database_id > 4), so there is no listMssqlDatabases twin of the
+	// mysql/postgres helpers.
+	dbs, _ := drv.ListMatching(ctx, "")
 	r.Detail = databasesDetail(dbs)
 	return r
 }
@@ -323,7 +346,7 @@ func s3LiteralPrefixes(cfg *config.Config) []string {
 
 type dbSchemaIn struct {
 	Repo      string `json:"repo,omitempty"`
-	Engine    string `json:"engine"               jsonschema:"mysql|mariadb|tidb|postgres|postgresql|mongodb|redis|elasticsearch"`
+	Engine    string `json:"engine"               jsonschema:"mysql|mariadb|tidb|postgres|postgresql|mssql|sqlserver|mongodb|redis|elasticsearch"`
 	DB        string `json:"db"`
 	MaxTables int    `json:"max_tables,omitempty" jsonschema:"sql/mongo: cap on the number of tables/collections returned (default 200). truncated=true is set in the output when the cap kicks in."`
 }
@@ -350,6 +373,8 @@ func dbSchemaDumpTool(ctx context.Context, _ *mcpsdk.CallToolRequest, in dbSchem
 		schema, err = dbSchemaMySQL(ctx, cfg, in.DB)
 	case engine.FamilyPostgres:
 		schema, err = dbSchemaPostgres(ctx, cfg, in.DB)
+	case engine.FamilyMSSQL:
+		schema, err = dbSchemaMssql(ctx, cfg, in.DB)
 	case engine.FamilyMongo:
 		schema, err = dbSchemaMongo(ctx, cfg, in.DB)
 	case engine.FamilyES:
@@ -437,6 +462,18 @@ func dbSchemaPostgres(ctx context.Context, cfg *config.Config, db string) (map[s
 	return postgresSchema(ctx, drv, db)
 }
 
+func dbSchemaMssql(ctx context.Context, cfg *config.Config, db string) (map[string]any, error) {
+	if cfg.Connections.Mssql == nil {
+		return nil, errors.New("connections.mssql not configured")
+	}
+	drv, err := dbmssql.Connect(ctx, *cfg.Connections.Mssql)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = drv.Close() }()
+	return mssqlSchema(ctx, drv, db)
+}
+
 func dbSchemaMongo(ctx context.Context, cfg *config.Config, db string) (map[string]any, error) {
 	if cfg.Connections.Mongodb == nil {
 		return nil, errors.New("connections.mongodb not configured")
@@ -478,7 +515,7 @@ type dbQueryIn struct {
 	Repo        string `json:"repo,omitempty"`
 	Engine      string `json:"engine"`
 	DB          string `json:"db"`
-	Query       string `json:"query,omitempty"        jsonschema:"SQL for mysql/postgres; raw command for redis"`
+	Query       string `json:"query,omitempty"        jsonschema:"SQL for mysql/postgres/mssql; raw command for redis"`
 	Collection  string `json:"collection,omitempty"   jsonschema:"mongodb collection name (read/find path)"`
 	FilterJSON  string `json:"filter_json,omitempty"  jsonschema:"mongodb filter document (read/find path)"`
 	CommandJSON string `json:"command_json,omitempty" jsonschema:"mongodb: a raw command document run via RunCommand, e.g. {\"insert\":\"users\",\"documents\":[...]}, {\"aggregate\":\"c\",\"pipeline\":[...],\"cursor\":{}}, {\"count\":\"c\"}. Read commands run with write=false; write commands need write=true+ack."`
@@ -524,6 +561,8 @@ func dbQueryTool(ctx context.Context, _ *mcpsdk.CallToolRequest, in dbQueryIn) (
 		rows, cols, affected, err = dbQueryMySQL(ctx, cfg, in)
 	case engine.FamilyPostgres:
 		rows, cols, affected, err = dbQueryPostgres(ctx, cfg, in)
+	case engine.FamilyMSSQL:
+		rows, cols, affected, err = dbQueryMssql(ctx, cfg, in)
 	case engine.FamilyMongo:
 		rows, err = dbQueryMongo(ctx, cfg, in)
 	case engine.FamilyES:
@@ -584,6 +623,33 @@ func dbQueryPostgres(ctx context.Context, cfg *config.Config, in dbQueryIn) ([]a
 		}
 	}
 	drv, err := dbpostgres.Connect(ctx, *cfg.Connections.Postgres)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	defer func() { _ = drv.Close() }()
+	scoped, err := drv.OpenScoped(ctx, in.DB)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	defer func() { _ = scoped.Close() }()
+	if in.Write {
+		rows, aff, err := execSQL(ctx, scoped, in.Query)
+		return rows, nil, aff, err
+	}
+	rows, cols, err := runSQLQuery(ctx, scoped, in.Query, in.Limit)
+	return rows, cols, nil, err
+}
+
+func dbQueryMssql(ctx context.Context, cfg *config.Config, in dbQueryIn) ([]any, []string, *int64, error) {
+	if !in.Write {
+		if err := assertReadOnlySQL(in.Query); err != nil {
+			return nil, nil, nil, err
+		}
+	}
+	if cfg.Connections.Mssql == nil {
+		return nil, nil, nil, errors.New("connections.mssql not configured")
+	}
+	drv, err := dbmssql.Connect(ctx, *cfg.Connections.Mssql)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -1136,6 +1202,10 @@ func dbDumpTool(ctx context.Context, _ *mcpsdk.CallToolRequest, in dbDumpIn) (*m
 			p += ".gz"
 		}
 		return runESDump(ctx, cfg.Connections.Elasticsearch, in.DB, p, in.Gzip)
+	case engine.FamilyMSSQL:
+		return nil, dbDumpOut{}, errors.New(
+			"db_dump: mssql dump is not implemented — sqlcmd is not a pg_dump equivalent (it cannot emit schema+data as SQL), and BACKUP DATABASE writes its .bak on the SQL Server host's filesystem rather than here. That is also why `dump:` is rejected in config for mssql entries: seed them from `seed:`/`migrate:` commands, which can get a file to the server and RESTORE it",
+		)
 	case engine.FamilyRedis:
 		return nil, dbDumpOut{}, errors.New(
 			"db_dump: redis dump is not implemented — redis cold-build uses a `seed:` step rather than a dump file, so there is no restore counterpart. If you need a redis snapshot, use redis-cli BGSAVE / SAVE manually and reference the resulting RDB out-of-band",
@@ -1368,6 +1438,77 @@ func postgresTableColumns(ctx context.Context, scoped *sql.DB, schema, name stri
 	return cols, true
 }
 
+func mssqlSchema(ctx context.Context, drv *dbmssql.Driver, db string) (map[string]any, error) {
+	scoped, err := drv.OpenScoped(ctx, db)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = scoped.Close() }()
+	// sys.tables rather than INFORMATION_SCHEMA.TABLES: the catalog view
+	// returns only base tables and already excludes system objects,
+	// whereas the information_schema view also lists views.
+	rows, err := scoped.QueryContext(ctx, `
+		SELECT s.name, t.name
+		FROM sys.tables AS t
+		JOIN sys.schemas AS s ON s.schema_id = t.schema_id
+		ORDER BY s.name, t.name
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	type tablePair struct{ schema, name string }
+	var tables []tablePair
+	for rows.Next() {
+		var p tablePair
+		_ = rows.Scan(&p.schema, &p.name)
+		tables = append(tables, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	schema := map[string]any{}
+	for _, t := range tables {
+		cols, ok := mssqlTableColumns(ctx, scoped, t.schema, t.name)
+		if !ok {
+			continue
+		}
+		schema[t.schema+"."+t.name] = cols
+	}
+	return map[string]any{"tables": schema}, nil
+}
+
+// mssqlTableColumns is postgresTableColumns for SQL Server — same
+// partial-schema contract (ok=false drops the one unreadable table
+// rather than the whole dump), different placeholder syntax.
+func mssqlTableColumns(ctx context.Context, scoped *sql.DB, schema, name string) ([]map[string]any, bool) {
+	colRows, err := scoped.QueryContext(ctx, `
+		SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_DEFAULT
+		FROM INFORMATION_SCHEMA.COLUMNS
+		WHERE TABLE_SCHEMA = @p1 AND TABLE_NAME = @p2
+		ORDER BY ORDINAL_POSITION
+	`, schema, name)
+	if err != nil {
+		return nil, false
+	}
+	defer func() { _ = colRows.Close() }()
+	var cols []map[string]any
+	for colRows.Next() {
+		var colName, dtype, nullable string
+		var def sql.NullString
+		_ = colRows.Scan(&colName, &dtype, &nullable, &def)
+		cols = append(cols, map[string]any{
+			"name": colName, "type": dtype,
+			"nullable": nullable == "YES",
+			"default":  def.String,
+		})
+	}
+	if err := colRows.Err(); err != nil {
+		return nil, false
+	}
+	return cols, true
+}
+
 func mongoSchema(ctx context.Context, drv *dbmongo.Driver, db string) (map[string]any, error) {
 	cols, err := drv.Client.Database(db).ListCollectionNames(ctx, struct{}{})
 	if err != nil {
@@ -1506,8 +1647,8 @@ func decodeSQLValue(v any) any {
 // ─── connection_probe ───────────────────────────────────────────────
 
 type connectionProbeIn struct {
-	Engine string `json:"engine"         jsonschema:"mysql|mariadb|tidb|postgres|postgresql|mongodb|redis|elasticsearch|opensearch"`
-	DSN    string `json:"dsn,omitempty"  jsonschema:"connection string. mysql://user:pw@host:port, postgres://…, mongodb://…, redis://…, http(s)://…(ES). Omit to probe the repo's configured connection for this engine."`
+	Engine string `json:"engine"         jsonschema:"mysql|mariadb|tidb|postgres|postgresql|mssql|sqlserver|mongodb|redis|elasticsearch|opensearch"`
+	DSN    string `json:"dsn,omitempty"  jsonschema:"connection string. mysql://user:pw@host:port, postgres://…, sqlserver://…, mongodb://…, redis://…, http(s)://…(ES). Omit to probe the repo's configured connection for this engine."`
 	Repo   string `json:"repo,omitempty" jsonschema:"only used when dsn is empty — selects the .treeman.yaml whose connection block to probe"`
 }
 
@@ -1564,6 +1705,8 @@ func probeConnection(ctx context.Context, fam engine.Family, dsn, repo string) (
 		return probeMySQLConn(ctx, dsn, repo)
 	case engine.FamilyPostgres:
 		return probePostgresConn(ctx, dsn, repo)
+	case engine.FamilyMSSQL:
+		return probeMssqlConn(ctx, dsn, repo)
 	case engine.FamilyMongo:
 		return probeMongoConn(ctx, dsn, repo)
 	case engine.FamilyRedis:
@@ -1626,6 +1769,31 @@ func probePostgresConn(ctx context.Context, dsn, repo string) (bool, string, err
 		cfg = *c.Connections.Postgres
 	}
 	drv, err := dbpostgres.Connect(ctx, cfg)
+	if err != nil {
+		return false, "", err
+	}
+	defer func() { _ = drv.Close() }()
+	v, _ := drv.EngineVersion(ctx)
+	return true, v, nil
+}
+
+func probeMssqlConn(ctx context.Context, dsn, repo string) (bool, string, error) {
+	var cfg config.MssqlConn
+	if dsn != "" {
+		if err := yamlScalar(&cfg, dsn); err != nil {
+			return false, "", err
+		}
+	} else {
+		c, err := loadCfgForRepo(ctx, repo)
+		if err != nil {
+			return false, "", err
+		}
+		if c.Connections.Mssql == nil {
+			return false, "", errors.New("connections.mssql not configured")
+		}
+		cfg = *c.Connections.Mssql
+	}
+	drv, err := dbmssql.Connect(ctx, cfg)
 	if err != nil {
 		return false, "", err
 	}
@@ -1706,7 +1874,7 @@ func probeESConn(ctx context.Context, dsn, repo string) (bool, string, error) {
 
 type engineLogsIn struct {
 	Repo   string `json:"repo,omitempty"`
-	Engine string `json:"engine"          jsonschema:"mysql|mariadb|tidb|postgres|postgresql|mongodb|redis|elasticsearch|opensearch"`
+	Engine string `json:"engine"          jsonschema:"mysql|mariadb|tidb|postgres|postgresql|mssql|sqlserver|mongodb|redis|elasticsearch|opensearch"`
 	Lines  int    `json:"lines,omitempty" jsonschema:"max lines returned (default 200, max 5000)"`
 	Since  string `json:"since,omitempty" jsonschema:"only logs newer than this — duration like 10m|2h (default empty = no since filter)"`
 }
@@ -1805,6 +1973,11 @@ func containerRefForEngine(cfg *config.Config, eng string) (*config.ContainerRef
 			return nil, errors.New("connections.postgres not configured")
 		}
 		ref = &cfg.Connections.Postgres.ContainerRef
+	case engine.FamilyMSSQL:
+		if cfg.Connections.Mssql == nil {
+			return nil, errors.New("connections.mssql not configured")
+		}
+		ref = &cfg.Connections.Mssql.ContainerRef
 	case engine.FamilyMongo:
 		if cfg.Connections.Mongodb == nil {
 			return nil, errors.New("connections.mongodb not configured")

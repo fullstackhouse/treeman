@@ -15,6 +15,7 @@ import (
 	"github.com/stubbedev/treeman/internal/config"
 	dbes "github.com/stubbedev/treeman/internal/db/es"
 	dbmongo "github.com/stubbedev/treeman/internal/db/mongo"
+	dbmssql "github.com/stubbedev/treeman/internal/db/mssql"
 	dbmysql "github.com/stubbedev/treeman/internal/db/mysql"
 	dbpostgres "github.com/stubbedev/treeman/internal/db/postgres"
 	dbredis "github.com/stubbedev/treeman/internal/db/redis"
@@ -315,6 +316,44 @@ func (a postgresNS) Watermark(ctx context.Context, ns string) (string, error) {
 	return a.d.WriteWatermark(ctx, ns)
 }
 
+type mssqlNS struct{ d *dbmssql.Driver }
+
+func (a mssqlNS) Exists(ctx context.Context, ns string) (bool, error) {
+	return a.d.DatabaseExists(ctx, ns)
+}
+
+func (a mssqlNS) Capture(ctx context.Context, active, durable string) error {
+	return a.d.SnapshotCreate(ctx, active, durable)
+}
+
+func (a mssqlNS) Restore(ctx context.Context, durable, active string) error {
+	return a.d.SnapshotRestore(ctx, durable, active)
+}
+
+func (a mssqlNS) RestoreParent(ctx context.Context, parent, active string, _ func(string) bool) error {
+	return a.d.SnapshotRestore(ctx, parent, active)
+}
+
+func (a mssqlNS) Empty(ctx context.Context, active string) error {
+	// EXACT drop, not DropMatching — see mysqlNS.Empty.
+	if err := a.d.DropDatabase(ctx, active); err != nil {
+		return err
+	}
+	return a.d.EnsureDB(ctx, active)
+}
+
+func (a mssqlNS) Drop(ctx context.Context, ns string) error {
+	return a.d.DropDatabase(ctx, ns)
+}
+
+func (a mssqlNS) DropDurable(ctx context.Context, durable string) error {
+	return a.d.DropSnapshot(ctx, durable)
+}
+
+func (a mssqlNS) Watermark(ctx context.Context, ns string) (string, error) {
+	return a.d.WriteWatermark(ctx, ns)
+}
+
 type mongoNS struct{ d *dbmongo.Driver }
 
 func (a mongoNS) Exists(ctx context.Context, ns string) (bool, error) {
@@ -588,6 +627,16 @@ func connectBranchEngine(
 			return nil, func() {}, err
 		}
 		return &branchEngine{drv: postgresNS{drv}, scope: scope, engine: label}, func() { _ = drv.Close() }, nil
+	case "mssql":
+		ms, rerr := cfg.Connections.ResolveMssql(connection)
+		if rerr != nil || ms == nil {
+			return nil, func() {}, errors.New("connections.mssql not configured")
+		}
+		drv, err := dbmssql.Connect(ctx, *ms)
+		if err != nil {
+			return nil, func() {}, err
+		}
+		return &branchEngine{drv: mssqlNS{drv}, scope: scope, engine: label}, func() { _ = drv.Close() }, nil
 	case "mongodb":
 		mc, rerr := cfg.Connections.ResolveMongodb(connection)
 		if rerr != nil || mc == nil {

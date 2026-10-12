@@ -62,6 +62,7 @@ func (s Source) String() string {
 type Resolved struct {
 	Mysql         *resolvedConn[config.MysqlConn]
 	Postgres      *resolvedConn[config.PostgresConn]
+	Mssql         *resolvedConn[config.MssqlConn]
 	Mongodb       *resolvedConn[config.MongoConn]
 	Redis         *resolvedConn[config.RedisConn]
 	Elasticsearch *resolvedConn[config.EsConn]
@@ -93,6 +94,7 @@ func resolveRoots(cfg *config.Config, roots ...string) Resolved {
 	return Resolved{
 		Mysql:         resolveMysql(cfg, env),
 		Postgres:      resolvePostgres(cfg, env),
+		Mssql:         resolveMssql(cfg, env),
 		Mongodb:       resolveMongodb(cfg, env),
 		Redis:         resolveRedis(cfg, env),
 		Elasticsearch: resolveElasticsearch(cfg, env),
@@ -119,6 +121,10 @@ func ApplyEnvCredentials(cfg *config.Config, roots ...string) {
 	if r.Postgres != nil {
 		v := r.Postgres.Conn
 		cfg.Connections.Postgres = &v
+	}
+	if r.Mssql != nil {
+		v := r.Mssql.Conn
+		cfg.Connections.Mssql = &v
 	}
 	if r.Mongodb != nil {
 		v := r.Mongodb.Conn
@@ -151,6 +157,10 @@ func fillFromContainerEnv(cfg *config.Config) {
 	fillPostgresPasswordFromContainerEnv(cfg.Connections.Postgres)
 	for _, p := range cfg.Connections.PostgresNamed {
 		fillPostgresPasswordFromContainerEnv(p)
+	}
+	fillMssqlPasswordFromContainerEnv(cfg.Connections.Mssql)
+	for _, m := range cfg.Connections.MssqlNamed {
+		fillMssqlPasswordFromContainerEnv(m)
 	}
 	fillS3FromContainerEnv(cfg.Connections.S3)
 	for _, s := range cfg.Connections.S3Named {
@@ -189,6 +199,27 @@ func fillPostgresPasswordFromContainerEnv(p *config.PostgresConn) {
 	for _, k := range []string{"POSTGRES_PASSWORD", "POSTGRESQL_PASSWORD"} {
 		if v, ok := env[k]; ok && nonEmpty(v) {
 			p.Password = v
+			return
+		}
+	}
+}
+
+// fillMssqlPasswordFromContainerEnv is the postgres filler for SQL
+// Server. MSSQL_SA_PASSWORD is what the official image documents;
+// SA_PASSWORD is the older name it still honours.
+func fillMssqlPasswordFromContainerEnv(m *config.MssqlConn) {
+	if m == nil || m.Password != "" || (m.Container == "" && m.ComposeService == "") {
+		return
+	}
+	env, _ := containerip.EnvLookup(context.Background(), containerip.Opts{
+		Container:      m.Container,
+		ComposeService: m.ComposeService,
+		ComposeProject: m.ComposeProject,
+		Engine:         m.ContainerEngine,
+	})
+	for _, k := range []string{"MSSQL_SA_PASSWORD", "SA_PASSWORD"} {
+		if v, ok := env[k]; ok && nonEmpty(v) {
+			m.Password = v
 			return
 		}
 	}
@@ -642,6 +673,8 @@ func normalizeEngineScheme(s string) string {
 		return "postgres"
 	case "cockroach", "cockroachdb":
 		return "cockroach"
+	case "sqlserver", "mssql":
+		return "mssql"
 	case "redis", "rediss":
 		return "redis"
 	case "mongodb", "mongodb+srv":
@@ -684,6 +717,76 @@ func mysqlFromURL(u *url.URL) config.MysqlConn {
 		}
 	}
 	return config.MysqlConn{Host: host, Port: port, User: user, PoolMax: 8}
+}
+
+func resolveMssql(cfg *config.Config, env envfile.EnvFile) *resolvedConn[config.MssqlConn] {
+	if cfg.Connections.Mssql != nil {
+		m := *cfg.Connections.Mssql
+		m.Password = resolveMssqlPassword(env, m.Password)
+		return &resolvedConn[config.MssqlConn]{Conn: m, Source: Source{Kind: SourceYaml}}
+	}
+	if m, ok := springMssql(env); ok {
+		return &resolvedConn[config.MssqlConn]{Conn: m, Source: repoSrc(env)}
+	}
+	if u, src, ok := pickURL(env, "MSSQL_URL", []string{"sqlserver", "mssql"}); ok {
+		m := mssqlFromURL(u)
+		if pw, ok := urlPassword(u); ok {
+			m.Password = pw
+		}
+		return &resolvedConn[config.MssqlConn]{Conn: m, Source: src}
+	}
+	return nil
+}
+
+func springMssql(env envfile.EnvFile) (config.MssqlConn, bool) {
+	v, ok := env.Get("SPRING_DATASOURCE_URL")
+	if !ok {
+		return config.MssqlConn{}, false
+	}
+	u, eng := parseJDBC(v)
+	if eng != "mssql" {
+		return config.MssqlConn{}, false
+	}
+	m := mssqlFromURL(u)
+	if pw, ok := springPassword(env, u); ok {
+		m.Password = pw
+	}
+	if user, ok := env.Get("SPRING_DATASOURCE_USERNAME"); ok {
+		m.User = user
+	}
+	return m, true
+}
+
+func resolveMssqlPassword(env envfile.EnvFile, configured string) string {
+	if v := resolvePasswordValue(env, configured); v != "" {
+		return v
+	}
+	for _, k := range []string{"DB_TEST_PASSWORD", "DB_PASSWORD", "MSSQL_SA_PASSWORD", "SA_PASSWORD"} {
+		if v, ok := env.Get(k); ok && nonEmpty(v) {
+			return v
+		}
+	}
+	return ""
+}
+
+func mssqlFromURL(u *url.URL) config.MssqlConn {
+	host := u.Hostname()
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	port := uint16(1433)
+	if p := u.Port(); p != "" {
+		if n, err := strconv.ParseUint(p, 10, 16); err == nil {
+			port = uint16(n)
+		}
+	}
+	user := "sa"
+	if u.User != nil {
+		if n := u.User.Username(); n != "" {
+			user = n
+		}
+	}
+	return config.MssqlConn{Host: host, Port: port, User: user, PoolMax: 8}
 }
 
 func postgresFromURL(u *url.URL) config.PostgresConn {

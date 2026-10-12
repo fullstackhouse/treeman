@@ -37,6 +37,7 @@ import (
 	dbes "github.com/stubbedev/treeman/internal/db/es"
 	dbfile "github.com/stubbedev/treeman/internal/db/filedb"
 	dbmongo "github.com/stubbedev/treeman/internal/db/mongo"
+	dbmssql "github.com/stubbedev/treeman/internal/db/mssql"
 	dbmysql "github.com/stubbedev/treeman/internal/db/mysql"
 	dbpostgres "github.com/stubbedev/treeman/internal/db/postgres"
 	dbredis "github.com/stubbedev/treeman/internal/db/redis"
@@ -293,9 +294,14 @@ type cloneRestorer func(ctx context.Context, template, target string) error
 // `CREATE DATABASE … TEMPLATE` statement; the bottleneck is disk
 // throughput (block-copy of template files), so an outer wider than
 // 8 just thrashes seeks without improving wall-clock — cap there.
+// SQL Server's RESTORE is a page-level copy like Postgres's TEMPLATE,
+// but it reads one shared backup file per template rather than the
+// source's own files, so the outer fan-out is held to 4 — four parallel
+// readers of one file is where sequential read-ahead stops helping.
 var fanOutLimits = map[engine.Family]int{
 	engine.FamilyMySQL:    4,
 	engine.FamilyPostgres: 8,
+	engine.FamilyMSSQL:    4,
 	// File copies: no connection budget to respect — the cap is disk
 	// throughput, and reflink clones are metadata-only where supported.
 	engine.FamilyFile: 8,
@@ -311,6 +317,7 @@ var fanOutLimits = map[engine.Family]int{
 var innerConnsPerRestore = map[engine.Family]int{
 	engine.FamilyMySQL:    mysqlInnerPerRestore,
 	engine.FamilyPostgres: 1,
+	engine.FamilyMSSQL:    1,
 }
 
 // mysqlInnerPerRestore mirrors mysqlCloneFanout in the mysql driver.
@@ -778,6 +785,8 @@ func prepareFamily(
 		return prepareMySQL(ctx, cfg, d, dbIdx, tplCtx, worktreePath, st, repoID, worktreeID, inheritedEnv)
 	case engine.FamilyPostgres:
 		return preparePostgres(ctx, cfg, d, dbIdx, tplCtx, worktreePath, st, repoID, worktreeID, inheritedEnv)
+	case engine.FamilyMSSQL:
+		return prepareMSSQL(ctx, cfg, d, dbIdx, tplCtx, worktreePath, st, repoID, worktreeID, inheritedEnv)
 	case engine.FamilyMongo:
 		return prepareMongo(ctx, cfg, d, dbIdx, tplCtx, worktreePath, st, repoID, worktreeID, inheritedEnv)
 	case engine.FamilyRedis:
@@ -2368,6 +2377,246 @@ func postgresColdBuildSteps(
 	// Seed the dump-only intermediate template (post-dump, pre-migrate).
 	// Best-effort; see the mysql cold-build site for rationale.
 	seedDumpOnlyTemplate(ctx, st, d, repoID, worktreeID, sourceDB, version, dumpKey, len(dumps), drv.DatabaseExists, drv.SnapshotCreate)
+	if d.Migrate != nil {
+		if err := runPhase(
+			ctx,
+			st,
+			repoID,
+			worktreeID,
+			d,
+			tplCtx,
+			worktreePath,
+			sourceDB,
+			"migrate",
+			runner.FromMigrate(*d.Migrate),
+			inheritedEnv,
+		); err != nil {
+			return err
+		}
+	}
+	if d.Seed != nil {
+		if err := runPhase(
+			ctx,
+			st,
+			repoID,
+			worktreeID,
+			d,
+			tplCtx,
+			worktreePath,
+			sourceDB,
+			"seed",
+			runner.FromSeed(*d.Seed),
+			inheritedEnv,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// prepareMSSQL readies the per-worktree SQL Server database. Same
+// linear flow as preparePostgres with two differences, both from the
+// engine: a template is a database plus a `.bak` beside it (SQL Server
+// has no `CREATE DATABASE … TEMPLATE`), and `dump:` is rejected by
+// config validation because RESTORE reads the server's filesystem, not
+// treeman's — so the dump-only template path has nothing to build from
+// and is not wired up here.
+//
+//nolint:funlen // mirrors the linear cache-hit / incremental / cold-build / fanout flow used by every engine; extracting helpers just spreads the same conditions across functions
+func prepareMSSQL(
+	ctx context.Context,
+	cfg *config.Config,
+	d config.DatabaseConfig,
+	dbIdx int,
+	tplCtx template.Context,
+	worktreePath string,
+	st *store.Store,
+	repoID, worktreeID int64,
+	inheritedEnv map[string]string,
+) (out Outcome, err error) {
+	started := time.Now()
+	sourceDB, err := template.Render(d.NameTemplate, tplCtx)
+	if err != nil {
+		return Outcome{}, fmt.Errorf("render name_template: %w", err)
+	}
+	msConn, err := cfg.Connections.ResolveMssql(d.Connection)
+	if err != nil {
+		return Outcome{}, err
+	}
+	if msConn == nil {
+		return emitPrepareSkipped(ctx, st, repoID, worktreeID, d.Engine, sourceDB,
+			"connections.mssql not configured"), nil
+	}
+
+	drv, err := dbmssql.Connect(ctx, *msConn)
+	if err != nil {
+		return Outcome{}, err
+	}
+	defer func() { _ = drv.Close() }()
+
+	// Probe keys ride the connection selector — different servers must
+	// not share probe results (see prepareMySQL, #44).
+	version, _ := cachedProbe(ctx, "mssql-version:"+d.Connection, func() (string, error) { return drv.EngineVersion(ctx) })
+	maxConns, _ := cachedProbe(ctx, "mssql-maxconns:"+d.Connection, func() (int, error) { return drv.MaxConnections(ctx) })
+
+	if d.BranchScoped {
+		return runBranchScoped(ctx, branchScopedArgs{
+			cfg: cfg, d: d, dbIdx: dbIdx, tplCtx: tplCtx, worktreePath: worktreePath,
+			st: st, repoID: repoID, worktreeID: worktreeID, inheritedEnv: inheritedEnv,
+			migrateFP: computeSnapshotKey(ctx, st, d, worktreePath, version).Fingerprint(),
+			eng:       &branchEngine{drv: mssqlNS{drv}, scope: scopeName, engine: "mssql"},
+			// Unreachable: config.validateMssql rejects `dump:` for this
+			// family, so a branch-scoped mssql entry never carries one.
+			// Stated rather than left as a nil panic.
+			loadDump: func(context.Context, string, dumpFile) error {
+				return errors.New("mssql: `dump:` is not supported — see config validation")
+			},
+		})
+	}
+
+	key, inputs := computeKeyAndVectors(ctx, st, d, worktreePath, version)
+	templateName := key.TemplateName()
+
+	// See prepareMySQL's pin comment — same race, same fix.
+	unpinTemplate := snapshot.Pin(key.Fingerprint())
+	defer unpinTemplate()
+
+	_ = st.WriteEvent(ctx, store.LevelInfo, store.EvtPrepareStart,
+		fmt.Sprintf("engine=mssql source=%s template=%s", sourceDB, templateName),
+		repoID, worktreeID, "", 0, map[string]string{
+			"engine":      "mssql",
+			"source_db":   sourceDB,
+			"template":    templateName,
+			"fingerprint": key.Fingerprint(),
+		})
+
+	// Cache hit? Fingerprint covers every declared input. With a spare
+	// pool configured, restores first try to claim a pre-warmed spare by
+	// rename before paying a full RESTORE.
+	restore := restoreFor(d.Engine, engineconn.NewMSSQLConn(drv), drv.SnapshotRestore,
+		st, repoID, worktreeID, d)
+	out, done, flight, err := cacheHitGeneric(
+		ctx,
+		drv.DatabaseExists,
+		restore,
+		d,
+		tplCtx,
+		worktreePath,
+		st,
+		repoID,
+		worktreeID,
+		sourceDB,
+		key,
+		maxConns,
+		started,
+	)
+	defer flight.finish()
+	if done || err != nil {
+		return out, err
+	}
+
+	ops := incrementalOps{
+		exists:          drv.DatabaseExists,
+		snapshotRestore: drv.SnapshotRestore,
+		snapshotCreate:  drv.SnapshotCreate,
+	}
+
+	out, done, err = tryIncrementalBuild(ctx, cfg, d, tplCtx, worktreePath, st,
+		repoID, worktreeID, sourceDB, templateName, version, maxConns, key, inputs,
+		inheritedEnv, started, ops)
+	if done || err != nil {
+		return out, err
+	}
+
+	out, done, err = tryRollbackIncrementalBuild(ctx, cfg, d, tplCtx, worktreePath, st,
+		repoID, worktreeID, sourceDB, templateName, version, maxConns, key, inputs,
+		inheritedEnv, started, ops)
+	if done || err != nil {
+		return out, err
+	}
+
+	if err := mssqlColdBuildSteps(
+		ctx,
+		drv,
+		d,
+		tplCtx,
+		worktreePath,
+		st,
+		repoID,
+		worktreeID,
+		sourceDB,
+		inheritedEnv,
+	); err != nil {
+		return Outcome{}, err
+	}
+	snapStart := time.Now()
+	if err := drv.SnapshotCreate(ctx, sourceDB, templateName); err != nil {
+		return Outcome{}, fmt.Errorf("snapshot create %s → %s: %w", sourceDB, templateName, err)
+	}
+	emitPhaseDone(ctx, st, repoID, worktreeID, d.Engine, sourceDB, "snapshot-create", snapStart)
+	recordSnapshot(ctx, st, key, d.Engine, version, sourceDB, templateName, inputs, repoID)
+	spawnEvict(cfg, st, repoID)
+
+	clones, err := resolveCloneNames(d.TestClones, tplCtx, worktreePath)
+	if err != nil {
+		return Outcome{}, err
+	}
+	if err := fanOutClones(
+		ctx,
+		st,
+		repoID,
+		worktreeID,
+		drv.SnapshotRestore,
+		templateName,
+		clones,
+		d.Engine,
+		d.Fanout,
+		maxConns,
+	); err != nil {
+		return Outcome{}, err
+	}
+	ms := time.Since(started).Milliseconds()
+	_ = st.WriteEvent(ctx, store.LevelInfo, store.EvtPrepareEnd,
+		fmt.Sprintf("cold_build clones=%d duration=%dms", len(clones), ms),
+		repoID, worktreeID, "", 0, map[string]string{
+			"engine":      "mssql",
+			"source_db":   sourceDB,
+			"template":    templateName,
+			"clones":      strconv.Itoa(len(clones)),
+			"cache_hit":   "false",
+			"duration_ms": strconv.FormatInt(ms, 10),
+		})
+	return Outcome{
+		Engine: d.Engine, SourceDB: sourceDB, TemplateName: templateName,
+		Fingerprint: key.Fingerprint(), CacheHit: false, Clones: clones,
+	}, nil
+}
+
+// mssqlColdBuildSteps runs the SQL Server cold-build populate phase:
+// drop + recreate the source DB, then migrate and seed. No dump step —
+// `dump:` is rejected for this family (config.validateMssql), so there
+// is no intermediate dump-only template to seed either.
+func mssqlColdBuildSteps(
+	ctx context.Context,
+	drv *dbmssql.Driver,
+	d config.DatabaseConfig,
+	tplCtx template.Context,
+	worktreePath string,
+	st *store.Store,
+	repoID, worktreeID int64,
+	sourceDB string,
+	inheritedEnv map[string]string,
+) error {
+	// mssqlColdBuild: cold-build pre-drop site (see coldbuild_invariant_test).
+	// DropDatabase, NOT DropMatching — see the comment on the matching
+	// mysql cold-build site.
+	if err := drv.DropDatabase(ctx, sourceDB); err != nil {
+		return err
+	}
+	emitColdBuildDrop(ctx, st, repoID, worktreeID, "mssql", sourceDB)
+	if err := drv.EnsureDB(ctx, sourceDB); err != nil {
+		return err
+	}
 	if d.Migrate != nil {
 		if err := runPhase(
 			ctx,

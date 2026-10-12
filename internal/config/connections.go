@@ -72,7 +72,7 @@ func isSingleConnNode[T any](node *yaml.Node) bool {
 
 // UnmarshalYAML decodes the `connections:` block, routing each family
 // key through the single-or-named union decode. ConnectionsConfig is
-// exactly the seven family keys, so the mapping is walked directly —
+// exactly the eight family keys, so the mapping is walked directly —
 // decoding through an alias-with-shadowed-fields breaks on scalar DSN
 // values — and any other key fails loud, matching the decoder's
 // KnownFields contract.
@@ -89,6 +89,8 @@ func (c *ConnectionsConfig) UnmarshalYAML(node *yaml.Node) error {
 			err = decodeConnUnion(val, &c.Mysql, &c.MysqlNamed)
 		case "postgres":
 			err = decodeConnUnion(val, &c.Postgres, &c.PostgresNamed)
+		case "mssql":
+			err = decodeConnUnion(val, &c.Mssql, &c.MssqlNamed)
 		case "mongodb":
 			err = decodeConnUnion(val, &c.Mongodb, &c.MongodbNamed)
 		case "redis":
@@ -100,7 +102,7 @@ func (c *ConnectionsConfig) UnmarshalYAML(node *yaml.Node) error {
 		case "sqlite":
 			err = decodeConnUnion(val, &c.Sqlite, &c.SqliteNamed)
 		default:
-			err = fmt.Errorf("unknown key %q (expected one of: mysql, postgres, mongodb, redis, elasticsearch, s3, sqlite)", key)
+			err = fmt.Errorf("unknown key %q (expected one of: mysql, postgres, mssql, mongodb, redis, elasticsearch, s3, sqlite)", key)
 		}
 		if err != nil {
 			return fmt.Errorf("connections.%s: %w", key, err)
@@ -133,6 +135,11 @@ func (c *ConnectionsConfig) ResolveMysql(name string) (*MysqlConn, error) {
 // ResolvePostgres is ResolveMysql for postgres.
 func (c *ConnectionsConfig) ResolvePostgres(name string) (*PostgresConn, error) {
 	return resolveNamed(c.Postgres, c.PostgresNamed, "postgres", name)
+}
+
+// ResolveMssql is ResolveMysql for SQL Server.
+func (c *ConnectionsConfig) ResolveMssql(name string) (*MssqlConn, error) {
+	return resolveNamed(c.Mssql, c.MssqlNamed, "mssql", name)
 }
 
 // ResolveMongodb is ResolveMysql for mongodb.
@@ -170,6 +177,8 @@ func (c *ConnectionsConfig) familyShape(fam engine.Family) (hasSingle bool, name
 		return c.Mysql != nil, len(c.MysqlNamed)
 	case engine.FamilyPostgres:
 		return c.Postgres != nil, len(c.PostgresNamed)
+	case engine.FamilyMSSQL:
+		return c.Mssql != nil, len(c.MssqlNamed)
 	case engine.FamilyMongo:
 		return c.Mongodb != nil, len(c.MongodbNamed)
 	case engine.FamilyRedis:
@@ -194,6 +203,9 @@ func (c *ConnectionsConfig) hasNamedBlock(fam engine.Family, name string) bool {
 		return ok
 	case engine.FamilyPostgres:
 		_, ok := c.PostgresNamed[name]
+		return ok
+	case engine.FamilyMSSQL:
+		_, ok := c.MssqlNamed[name]
 		return ok
 	case engine.FamilyMongo:
 		_, ok := c.MongodbNamed[name]
@@ -259,6 +271,8 @@ func (c *ConnectionsConfig) namedNames(fam engine.Family) map[string]struct{} {
 		addNames(c.MysqlNamed, out)
 	case engine.FamilyPostgres:
 		addNames(c.PostgresNamed, out)
+	case engine.FamilyMSSQL:
+		addNames(c.MssqlNamed, out)
 	case engine.FamilyMongo:
 		addNames(c.MongodbNamed, out)
 	case engine.FamilyRedis:
